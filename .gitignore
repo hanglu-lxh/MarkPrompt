@@ -1,0 +1,46 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# App build outputs
+*.app
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# MarkPrompt local review artifacts
+*.review.json
+*.prompt.md
+!samples/**/*.review.json
+!samples/**/*.prompt.md
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Editor
+.vscode/
+.idea/
+
