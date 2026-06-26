@@ -1,0 +1,24 @@
+[
+  {
+    "appearance" : "light",
+    "blockCount" : 165,
+    "blockKinds" : {
+      "blockquote" : 1,
+      "codeBlock" : 13,
+      "heading" : 69,
+      "orderedList" : 4,
+      "paragraph" : 25,
+      "table" : 19,
+      "thematicBreak" : 14,
+      "unorderedList" : 20
+    },
+    "file" : "AI_图像生成模型_开源闭源全面对比报告_2026.md",
+    "headingCount" : 69,
+    "outputImage" : "AI_图像生成模型_开源闭源全面对比报告_2026.png",
+    "renderedCharacters" : 15340,
+    "snapshotHeight" : 27469,
+    "snapshotWidth" : 1180,
+    "sourceCharacters" : 20277,
+    "title" : "AI 图像生成模型：开源 vs 闭源 全面深度对比报告（2026）"
+  }
+]

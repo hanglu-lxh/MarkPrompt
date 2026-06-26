@@ -1,0 +1,179 @@
+[
+  {
+    "appearance" : "light",
+    "blockCount" : 20,
+    "blockKinds" : {
+      "heading" : 9,
+      "paragraph" : 11
+    },
+    "file" : "01_headings_inline.md",
+    "headingCount" : 9,
+    "outputImage" : "01_headings_inline.png",
+    "renderedCharacters" : 1428,
+    "snapshotHeight" : 2240,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 1745,
+    "title" : "Reader Fixture: Headings and Inline Styles"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 14,
+    "blockKinds" : {
+      "definitionList" : 2,
+      "heading" : 7,
+      "orderedList" : 3,
+      "taskList" : 1,
+      "unorderedList" : 1
+    },
+    "file" : "02_lists_tasks.md",
+    "headingCount" : 7,
+    "outputImage" : "02_lists_tasks.png",
+    "renderedCharacters" : 1224,
+    "snapshotHeight" : 2098,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 1339,
+    "title" : "Reader Fixture: Lists and Tasks"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 7,
+    "blockKinds" : {
+      "heading" : 4,
+      "table" : 3
+    },
+    "file" : "03_tables_wide.md",
+    "headingCount" : 4,
+    "outputImage" : "03_tables_wide.png",
+    "renderedCharacters" : 1110,
+    "snapshotHeight" : 1373,
+    "snapshotWidth" : 976,
+    "sourceCharacters" : 1511,
+    "title" : "Reader Fixture: Wide Tables"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 13,
+    "blockKinds" : {
+      "codeBlock" : 6,
+      "heading" : 7
+    },
+    "file" : "04_code_blocks.md",
+    "headingCount" : 7,
+    "outputImage" : "04_code_blocks.png",
+    "renderedCharacters" : 634,
+    "snapshotHeight" : 2430,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 709,
+    "title" : "Reader Fixture: Code Blocks"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 8,
+    "blockKinds" : {
+      "blockquote" : 3,
+      "footnote" : 2,
+      "heading" : 1,
+      "paragraph" : 2
+    },
+    "file" : "05_quotes_footnotes.md",
+    "headingCount" : 1,
+    "outputImage" : "05_quotes_footnotes.png",
+    "renderedCharacters" : 840,
+    "snapshotHeight" : 1138,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 917,
+    "title" : "Reader Fixture: Quotes and Footnotes"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 14,
+    "blockKinds" : {
+      "heading" : 5,
+      "image" : 3,
+      "paragraph" : 6
+    },
+    "file" : "06_images_links.md",
+    "headingCount" : 5,
+    "outputImage" : "06_images_links.png",
+    "renderedCharacters" : 681,
+    "snapshotHeight" : 2118,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 938,
+    "title" : "Reader Fixture: Images and Links"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 7,
+    "blockKinds" : {
+      "codeBlock" : 1,
+      "heading" : 1,
+      "mathBlock" : 1,
+      "paragraph" : 4
+    },
+    "file" : "07_math_mermaid_fallback.md",
+    "headingCount" : 1,
+    "outputImage" : "07_math_mermaid_fallback.png",
+    "renderedCharacters" : 489,
+    "snapshotHeight" : 1192,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 494,
+    "title" : "Reader Fixture: Math and Mermaid Fallback"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 28,
+    "blockKinds" : {
+      "heading" : 16,
+      "paragraph" : 12
+    },
+    "file" : "08_long_outline.md",
+    "headingCount" : 16,
+    "outputImage" : "08_long_outline.png",
+    "renderedCharacters" : 783,
+    "snapshotHeight" : 2790,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 842,
+    "title" : "Reader Fixture: Long Outline"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 10,
+    "blockKinds" : {
+      "heading" : 2,
+      "htmlBlock" : 1,
+      "metadata" : 1,
+      "paragraph" : 4,
+      "table" : 1,
+      "thematicBreak" : 1
+    },
+    "file" : "09_frontmatter_html.md",
+    "headingCount" : 2,
+    "outputImage" : "09_frontmatter_html.png",
+    "renderedCharacters" : 801,
+    "snapshotHeight" : 1208,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 1122,
+    "title" : "Reader Fixture: Frontmatter and HTML"
+  },
+  {
+    "appearance" : "light",
+    "blockCount" : 12,
+    "blockKinds" : {
+      "blockquote" : 1,
+      "footnote" : 1,
+      "heading" : 5,
+      "orderedList" : 1,
+      "paragraph" : 2,
+      "table" : 1,
+      "taskList" : 1
+    },
+    "file" : "10_review_prd_mix.md",
+    "headingCount" : 5,
+    "outputImage" : "10_review_prd_mix.png",
+    "renderedCharacters" : 852,
+    "snapshotHeight" : 1532,
+    "snapshotWidth" : 760,
+    "sourceCharacters" : 981,
+    "title" : "Reader Fixture: Review PRD Mix"
+  }
+]
