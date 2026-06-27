@@ -1,5 +1,5 @@
 import AppKit
-import MarkPromptKit
+@testable import MarkPromptKit
 import XCTest
 
 @MainActor
@@ -58,6 +58,70 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(oversizedSelection.minY, 12)
         XCTAssertLessThanOrEqual(oversizedSelection.maxX, viewport.width - 12)
         XCTAssertLessThanOrEqual(oversizedSelection.maxY, viewport.height - 12)
+    }
+
+    func testScrollingReemitsSelectionWithUpdatedAnnotationButtonRect() throws {
+        let text = """
+        Target paragraph for annotation.
+
+        The reader keeps this document long enough to scroll while preserving selection.
+        The reader keeps this document long enough to scroll while preserving selection.
+        The reader keeps this document long enough to scroll while preserving selection.
+        The reader keeps this document long enough to scroll while preserving selection.
+        """
+        let storage = NSTextStorage(attributedString: NSAttributedString(string: text))
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 360, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = false
+        textContainer.lineFragmentPadding = 0
+        layoutManager.addTextContainer(textContainer)
+        storage.addLayoutManager(layoutManager)
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 300))
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 420, height: 520),
+            textContainer: textContainer
+        )
+        textView.textContainerInset = NSSize(width: 24, height: 24)
+        scrollView.documentView = textView
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        layoutManager.ensureLayout(for: textContainer)
+
+        let coordinator = MarkdownTextViewRepresentable.Coordinator()
+        coordinator.textView = textView
+        coordinator.attach(to: scrollView)
+
+        var emittedSelections: [ReaderSelection] = []
+        coordinator.onSelectionChange = { selection in
+            if let selection {
+                emittedSelections.append(selection)
+            }
+        }
+
+        let selectedRange = (textView.string as NSString).range(of: "The reader keeps")
+        textView.setSelectedRange(selectedRange)
+        coordinator.textViewDidChangeSelection(Notification(
+            name: NSTextView.didChangeSelectionNotification,
+            object: textView
+        ))
+        waitForMainQueue()
+        let initialRect = try XCTUnwrap(emittedSelections.last?.selectionRect)
+
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 18))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        NotificationCenter.default.post(
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        waitForMainQueue()
+
+        XCTAssertGreaterThanOrEqual(emittedSelections.count, 2)
+        let scrolledRect = try XCTUnwrap(emittedSelections.last?.selectionRect)
+        XCTAssertNotEqual(scrolledRect, initialRect)
+        XCTAssertGreaterThanOrEqual(scrolledRect.minX, 12)
+        XCTAssertGreaterThanOrEqual(scrolledRect.minY, 12)
+        XCTAssertLessThanOrEqual(scrolledRect.maxX, scrollView.bounds.width - 12)
+        XCTAssertLessThanOrEqual(scrolledRect.maxY, scrollView.bounds.height - 12)
     }
 
     func testRenderSignatureChangesWhenTextBecomesNativeTableBlock() {
@@ -431,6 +495,10 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         let usedRect = layoutManager.usedRect(for: textContainer)
         XCTAssertGreaterThan(usedRect.height, 0)
         XCTAssertLessThanOrEqual(usedRect.width, max(width, tableContentWidth) + 8)
+    }
+
+    private func waitForMainQueue() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
 
     private func footnoteBlock(in document: MarkdownDocument, contains text: String) -> Bool {

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 public struct RootView: View {
@@ -30,6 +31,9 @@ public struct RootView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .onOpenURL { url in
             appState.openDocument(at: url)
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            appState.openDroppedDocument(from: providers)
         }
     }
 

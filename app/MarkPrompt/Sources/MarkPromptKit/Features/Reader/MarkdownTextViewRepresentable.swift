@@ -188,7 +188,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
     public var scrollTargetHeadingID: UUID?
     public var scrollTargetRange: RenderedTextRange?
     public var onSelectionChange: (ReaderSelection?) -> Void
-    public var onScrollTargetConsumed: () -> Void
+    public var onScrollTargetConsumed: (UUID?, RenderedTextRange?) -> Void
     public var onVisibleHeadingChange: (UUID?) -> Void
 
     public init(
@@ -198,7 +198,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         scrollTargetHeadingID: UUID?,
         scrollTargetRange: RenderedTextRange?,
         onSelectionChange: @escaping (ReaderSelection?) -> Void,
-        onScrollTargetConsumed: @escaping () -> Void = {},
+        onScrollTargetConsumed: @escaping (UUID?, RenderedTextRange?) -> Void = { _, _ in },
         onVisibleHeadingChange: @escaping (UUID?) -> Void = { _ in }
     ) {
         self.attributedText = attributedText
@@ -296,8 +296,9 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
             textView.scrollRangeToVisible(renderedRange.nsRange)
             context.coordinator.lastScrollTargetHeadingID = scrollTargetHeadingID
             context.coordinator.emitVisibleHeading(from: scrollView)
+            let consumedHeadingID = scrollTargetHeadingID
             DispatchQueue.main.async {
-                onScrollTargetConsumed()
+                onScrollTargetConsumed(consumedHeadingID, nil)
             }
         } else if scrollTargetHeadingID == nil {
             context.coordinator.lastScrollTargetHeadingID = nil
@@ -306,11 +307,14 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         if let scrollTargetRange,
            context.coordinator.lastScrollTargetRange != scrollTargetRange {
             textView.scrollRangeToVisible(scrollTargetRange.nsRange)
-            textView.showFindIndicator(for: scrollTargetRange.nsRange)
+            if scrollTargetRange.length > 0 {
+                textView.showFindIndicator(for: scrollTargetRange.nsRange)
+            }
             context.coordinator.lastScrollTargetRange = scrollTargetRange
             context.coordinator.emitVisibleHeading(from: scrollView)
+            let consumedRange = scrollTargetRange
             DispatchQueue.main.async {
-                onScrollTargetConsumed()
+                onScrollTargetConsumed(nil, consumedRange)
             }
         } else if scrollTargetRange == nil {
             context.coordinator.lastScrollTargetRange = nil
@@ -445,10 +449,20 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
             }
 
             emitVisibleHeading(from: scrollView)
+            emitCurrentSelection(from: scrollView.documentView as? NSTextView)
         }
 
         public func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else {
+                return
+            }
+
+            emitCurrentSelection(from: textView)
+        }
+
+        private func emitCurrentSelection(from textView: NSTextView?) {
+            guard let textView else {
+                emitSelection(nil)
                 return
             }
 
