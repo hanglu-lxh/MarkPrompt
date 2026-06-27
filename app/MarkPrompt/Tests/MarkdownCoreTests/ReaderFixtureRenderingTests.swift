@@ -30,34 +30,102 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         let viewport = CGSize(width: 500, height: 600)
 
         let normal = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
-            forSelectionRectInViewport: CGRect(x: 120, y: 220, width: 80, height: 24),
+            forVisibleSelectionRect: CGRect(x: 120, y: 220, width: 80, height: 24),
             viewportSize: viewport
         ))
-        XCTAssertEqual(normal.origin.x, 210, accuracy: 0.01)
-        XCTAssertEqual(normal.origin.y, 356, accuracy: 0.01)
+        XCTAssertEqual(normal.origin.x, 124, accuracy: 0.01)
+        XCTAssertEqual(normal.origin.y, 166, accuracy: 0.01)
+        XCTAssertEqual(normal.maxX, 196, accuracy: 0.01)
 
         let nearRightEdge = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
-            forSelectionRectInViewport: CGRect(x: 450, y: 220, width: 42, height: 24),
+            forVisibleSelectionRect: CGRect(x: 450, y: 220, width: 42, height: 24),
             viewportSize: viewport
         ))
-        XCTAssertEqual(nearRightEdge.origin.x, 340, accuracy: 0.01)
-        XCTAssertEqual(nearRightEdge.origin.y, 356, accuracy: 0.01)
+        XCTAssertEqual(nearRightEdge.origin.x, 416, accuracy: 0.01)
+        XCTAssertEqual(nearRightEdge.origin.y, 166, accuracy: 0.01)
+
+        let nearTopEdge = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
+            forVisibleSelectionRect: CGRect(x: 180, y: 4, width: 120, height: 18),
+            viewportSize: viewport
+        ))
+        XCTAssertEqual(nearTopEdge.origin.x, 204, accuracy: 0.01)
+        XCTAssertEqual(nearTopEdge.origin.y, 32, accuracy: 0.01)
 
         let nearBottomEdge = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
-            forSelectionRectInViewport: CGRect(x: 180, y: 4, width: 120, height: 18),
+            forVisibleSelectionRect: CGRect(x: 180, y: 576, width: 120, height: 18),
             viewportSize: viewport
         ))
-        XCTAssertEqual(nearBottomEdge.origin.x, 310, accuracy: 0.01)
-        XCTAssertEqual(nearBottomEdge.origin.y, 556, accuracy: 0.01)
+        XCTAssertEqual(nearBottomEdge.origin.x, 204, accuracy: 0.01)
+        XCTAssertEqual(nearBottomEdge.origin.y, 522, accuracy: 0.01)
+
+        let tallVisibleSelection = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
+            forVisibleSelectionRect: CGRect(x: 90, y: 240, width: 280, height: 96),
+            viewportSize: viewport
+        ))
+        XCTAssertEqual(tallVisibleSelection.origin.x, 194, accuracy: 0.01)
+        XCTAssertEqual(tallVisibleSelection.origin.y, 186, accuracy: 0.01)
 
         let oversizedSelection = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
-            forSelectionRectInViewport: CGRect(x: -30, y: -40, width: 640, height: 720),
+            forVisibleSelectionRect: CGRect(x: -30, y: -40, width: 640, height: 720),
             viewportSize: viewport
         ))
         XCTAssertGreaterThanOrEqual(oversizedSelection.minX, 12)
         XCTAssertGreaterThanOrEqual(oversizedSelection.minY, 12)
         XCTAssertLessThanOrEqual(oversizedSelection.maxX, viewport.width - 12)
         XCTAssertLessThanOrEqual(oversizedSelection.maxY, viewport.height - 12)
+    }
+
+    func testAnnotationPopoverArrowEdgePointsBackTowardSelection() {
+        let selectionRect = CGRect(x: 120, y: 220, width: 80, height: 24)
+
+        XCTAssertEqual(
+            MarkdownReaderLayoutMetrics.annotationPopoverArrowEdge(
+                visibleSelectionRect: selectionRect,
+                annotationButtonRect: CGRect(x: 210, y: 216, width: 100, height: 32)
+            ),
+            .leading
+        )
+        XCTAssertEqual(
+            MarkdownReaderLayoutMetrics.annotationPopoverArrowEdge(
+                visibleSelectionRect: selectionRect,
+                annotationButtonRect: CGRect(x: 10, y: 216, width: 100, height: 32)
+            ),
+            .trailing
+        )
+    }
+
+    func testAnnotationPopoverRectPrefersVerticalSpaceAwayFromAnnotationLine() {
+        let viewport = CGSize(width: 500, height: 600)
+        let selectionRect = CGRect(x: 120, y: 160, width: 120, height: 24)
+        let upperButton = CGRect(x: 144, y: 106, width: 72, height: 44)
+
+        let lowerPopoverForUpperButton = MarkdownReaderLayoutMetrics.annotationPopoverRect(
+            forAnnotationButtonRect: upperButton,
+            avoidingVisibleSelectionRect: selectionRect,
+            viewportSize: viewport
+        )
+
+        XCTAssertGreaterThanOrEqual(lowerPopoverForUpperButton.minY, selectionRect.maxY + 11.99)
+
+        let lowerButton = CGRect(x: 210, y: 360, width: 100, height: 32)
+
+        let upperPopover = MarkdownReaderLayoutMetrics.annotationPopoverRect(
+            forAnnotationButtonRect: lowerButton,
+            viewportSize: viewport
+        )
+
+        XCTAssertLessThanOrEqual(upperPopover.maxY, lowerButton.minY - 9.99)
+        XCTAssertGreaterThanOrEqual(upperPopover.minY, 11.99)
+
+        let topButton = CGRect(x: 210, y: 40, width: 100, height: 32)
+
+        let lowerPopover = MarkdownReaderLayoutMetrics.annotationPopoverRect(
+            forAnnotationButtonRect: topButton,
+            viewportSize: viewport
+        )
+
+        XCTAssertGreaterThanOrEqual(lowerPopover.minY, topButton.maxY + 9.99)
+        XCTAssertLessThanOrEqual(lowerPopover.maxY, viewport.height - 11.99)
     }
 
     func testScrollingReemitsSelectionWithUpdatedAnnotationButtonRect() throws {
@@ -105,7 +173,8 @@ final class ReaderFixtureRenderingTests: XCTestCase {
             object: textView
         ))
         waitForMainQueue()
-        let initialRect = try XCTUnwrap(emittedSelections.last?.selectionRect)
+        let initialVisibleSelectionRect = try XCTUnwrap(emittedSelections.last?.visibleSelectionRect)
+        let initialButtonRect = try XCTUnwrap(emittedSelections.last?.annotationButtonRect)
 
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: 18))
         scrollView.reflectScrolledClipView(scrollView.contentView)
@@ -116,12 +185,20 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         waitForMainQueue()
 
         XCTAssertGreaterThanOrEqual(emittedSelections.count, 2)
-        let scrolledRect = try XCTUnwrap(emittedSelections.last?.selectionRect)
-        XCTAssertNotEqual(scrolledRect, initialRect)
-        XCTAssertGreaterThanOrEqual(scrolledRect.minX, 12)
-        XCTAssertGreaterThanOrEqual(scrolledRect.minY, 12)
-        XCTAssertLessThanOrEqual(scrolledRect.maxX, scrollView.bounds.width - 12)
-        XCTAssertLessThanOrEqual(scrolledRect.maxY, scrollView.bounds.height - 12)
+        let scrolledVisibleSelectionRect = try XCTUnwrap(emittedSelections.last?.visibleSelectionRect)
+        let scrolledButtonRect = try XCTUnwrap(emittedSelections.last?.annotationButtonRect)
+        XCTAssertNotEqual(scrolledVisibleSelectionRect, initialVisibleSelectionRect)
+        XCTAssertNotEqual(scrolledButtonRect, initialButtonRect)
+        let expectedButtonRect = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
+            forVisibleSelectionRect: scrolledVisibleSelectionRect,
+            viewportSize: scrollView.bounds.size
+        ))
+        XCTAssertEqual(scrolledButtonRect.origin.x, expectedButtonRect.origin.x, accuracy: 0.01)
+        XCTAssertEqual(scrolledButtonRect.origin.y, expectedButtonRect.origin.y, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(scrolledButtonRect.minX, 12)
+        XCTAssertGreaterThanOrEqual(scrolledButtonRect.minY, 12)
+        XCTAssertLessThanOrEqual(scrolledButtonRect.maxX, scrollView.bounds.width - 12)
+        XCTAssertLessThanOrEqual(scrolledButtonRect.maxY, scrollView.bounds.height - 12)
     }
 
     func testRenderSignatureChangesWhenTextBecomesNativeTableBlock() {

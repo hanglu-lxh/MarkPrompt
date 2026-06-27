@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 public struct ReaderStatusBannerPresentation: Equatable, Sendable {
@@ -92,39 +93,57 @@ public struct MarkdownReaderView: View {
             }
 
             if let document = appState.currentDocument {
-                ZStack(alignment: .topLeading) {
-                    let documentID = document.id
-                    MarkdownTextViewRepresentable(
-                        attributedText: document.renderModel.attributedText,
-                        sourceMap: document.renderModel.sourceMap,
-                        highlights: appState.annotationHighlights,
-                        scrollTargetHeadingID: appState.scrollTargetHeadingID,
-                        scrollTargetRange: appState.scrollTargetRange,
-                        onSelectionChange: { selection in
-                            appState.updateSelection(selection, from: documentID)
-                        },
-                        onScrollTargetConsumed: { headingID, range in
-                            appState.clearScrollTarget(headingID: headingID, range: range, from: documentID)
-                        },
-                        onVisibleHeadingChange: { headingID in
-                            appState.updateVisibleHeading(headingID, from: documentID)
-                        }
-                    )
+                GeometryReader { proxy in
+                    ZStack(alignment: .topLeading) {
+                        let documentID = document.id
+                        let annotationSelection = appState.readerSelection
+                        MarkdownTextViewRepresentable(
+                            attributedText: document.renderModel.attributedText,
+                            sourceMap: document.renderModel.sourceMap,
+                            highlights: activeAnnotationHighlights,
+                            annotationButtonRect: annotationEntryRect,
+                            isAnnotationButtonActive: appState.isAnnotationPopoverPresented,
+                            scrollTargetHeadingID: appState.scrollTargetHeadingID,
+                            scrollTargetRange: appState.scrollTargetRange,
+                            onAnnotationButtonPress: {
+                                if let annotationSelection {
+                                    appState.beginAnnotation(from: annotationSelection)
+                                } else {
+                                    appState.beginAnnotationFromCurrentSelection()
+                                }
+                            },
+                            onSelectionChange: { selection in
+                                appState.updateSelection(selection, from: documentID)
+                            },
+                            onScrollTargetConsumed: { headingID, range in
+                                appState.clearScrollTarget(headingID: headingID, range: range, from: documentID)
+                            },
+                            onVisibleHeadingChange: { headingID in
+                                appState.updateVisibleHeading(headingID, from: documentID)
+                            }
+                        )
 
-                    if appState.canCreateAnnotation,
-                       let rect = appState.readerSelection?.selectionRect {
-                        Button {
-                            appState.beginAnnotationFromCurrentSelection()
-                        } label: {
-                            Label("批注 +", systemImage: "text.bubble")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .position(x: rect.midX, y: rect.midY)
-                        .popover(isPresented: $appState.isAnnotationPopoverPresented, arrowEdge: .trailing) {
+                        if appState.isAnnotationPopoverPresented,
+                           let rect = annotationEntryRect {
+                            let popoverRect = MarkdownReaderLayoutMetrics.annotationPopoverRect(
+                                forAnnotationButtonRect: rect,
+                                avoidingVisibleSelectionRect: appState.readerSelection?.visibleSelectionRect,
+                                viewportSize: proxy.size
+                            )
                             AnnotationPopoverView()
                                 .environmentObject(appState)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color(nsColor: .textBackgroundColor))
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .shadow(color: Color.black.opacity(0.18), radius: 22, x: 0, y: 12)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                                )
+                                .position(x: popoverRect.midX, y: popoverRect.midY)
+                                .zIndex(20)
                         }
                     }
                 }
@@ -167,6 +186,32 @@ public struct MarkdownReaderView: View {
 
         let lineCount = document.rawMarkdown.split(separator: "\n", omittingEmptySubsequences: false).count
         return "\(document.rawMarkdown.count) 字符    \(lineCount) 行"
+    }
+
+    private var annotationEntryRect: CGRect? {
+        guard appState.canCreateAnnotation else {
+            return nil
+        }
+
+        return appState.readerSelection?.annotationButtonRect
+    }
+
+    private var activeAnnotationHighlights: [AnnotationHighlight] {
+        var highlights = appState.annotationHighlights
+        if appState.isAnnotationPopoverPresented,
+           let selection = appState.readerSelection {
+            highlights.append(
+                AnnotationHighlight(
+                    id: "draft-annotation-selection",
+                    range: selection.renderedRange,
+                    isSelected: true,
+                    isIncludedInPrompt: true,
+                    isAnchorLost: false
+                )
+            )
+        }
+
+        return highlights
     }
 }
 

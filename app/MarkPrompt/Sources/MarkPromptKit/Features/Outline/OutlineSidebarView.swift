@@ -3,8 +3,11 @@ import SwiftUI
 @MainActor
 public struct OutlineSidebarView: View {
     @EnvironmentObject private var appState: AppState
+    private var onCollapse: (() -> Void)?
 
-    public init() {}
+    public init(onCollapse: (() -> Void)? = nil) {
+        self.onCollapse = onCollapse
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -13,6 +16,17 @@ public struct OutlineSidebarView: View {
                 Text("大纲")
                     .font(.headline)
                 Spacer()
+                if let onCollapse {
+                    Button {
+                        onCollapse()
+                    } label: {
+                        Image(systemName: "sidebar.leading")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("收起大纲")
+                    .accessibilityLabel("收起大纲")
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -52,19 +66,6 @@ public struct OutlineSidebarView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            Divider()
-
-            HStack {
-                Image(systemName: "book")
-                Spacer()
-                Image(systemName: "magnifyingglass")
-                Spacer()
-                Image(systemName: "line.3.horizontal.decrease.circle")
-            }
-            .font(.system(size: 15))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 12)
         }
         .background(Color(nsColor: .controlBackgroundColor))
     }

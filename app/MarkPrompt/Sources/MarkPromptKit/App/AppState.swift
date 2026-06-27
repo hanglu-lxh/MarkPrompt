@@ -164,20 +164,25 @@ public final class AppState: ObservableObject {
     @Published public var scrollTargetRange: RenderedTextRange?
     @Published public var currentReadingHeadingID: UUID?
     @Published public var isAnnotationPopoverPresented = false
+    @Published public private(set) var recentDocumentURLs: [URL] = []
+    @Published public var clipboardMarkdownCandidate: ClipboardMarkdownCandidate?
 
     private let documentLoader: DocumentLoader
     private let reviewSessionStore: ReviewSessionStore
     private let promptFileStore: PromptFileStore
+    private let recentDocumentStore: RecentDocumentStore
     private let promptBuilder: PromptBuilder
     private let textAnchorBuilder: TextAnchorBuilder
     private let textAnchorResolver: TextAnchorResolver
     private var autosaveTask: Task<Void, Never>?
     private var importGeneration = 0
+    private var dismissedClipboardMarkdownPath: String?
 
     public init(
         documentLoader: DocumentLoader = DocumentLoader(),
         reviewSessionStore: ReviewSessionStore = ReviewSessionStore(),
         promptFileStore: PromptFileStore = PromptFileStore(),
+        recentDocumentStore: RecentDocumentStore = RecentDocumentStore(),
         promptBuilder: PromptBuilder = PromptBuilder(),
         textAnchorBuilder: TextAnchorBuilder = TextAnchorBuilder(),
         textAnchorResolver: TextAnchorResolver = TextAnchorResolver()
@@ -185,9 +190,11 @@ public final class AppState: ObservableObject {
         self.documentLoader = documentLoader
         self.reviewSessionStore = reviewSessionStore
         self.promptFileStore = promptFileStore
+        self.recentDocumentStore = recentDocumentStore
         self.promptBuilder = promptBuilder
         self.textAnchorBuilder = textAnchorBuilder
         self.textAnchorResolver = textAnchorResolver
+        self.recentDocumentURLs = recentDocumentStore.recentDocumentURLs()
     }
 
     deinit {
@@ -220,6 +227,64 @@ public final class AppState: ObservableObject {
         }
 
         openDocument(at: url)
+    }
+
+    @discardableResult
+    public func openLastDocumentIfAvailable() -> Bool {
+        guard let url = recentDocumentStore.lastOpenedDocumentURL(),
+              FileManager.default.fileExists(atPath: url.path),
+              documentLoader.canLoadDocument(from: url)
+        else {
+            return false
+        }
+
+        return openDocument(at: url)
+    }
+
+    public func clearRecentDocuments() {
+        recentDocumentStore.clear()
+        recentDocumentURLs = []
+    }
+
+    public func refreshClipboardMarkdownCandidate(pasteboard: NSPasteboard = .general) {
+        let candidateURL = ClipboardMarkdownDocumentResolver.markdownFileURLs(from: pasteboard).first
+        guard let candidateURL,
+              candidateURL.standardizedFileURL != currentDocument?.fileURL?.standardizedFileURL
+        else {
+            clipboardMarkdownCandidate = nil
+            return
+        }
+
+        let candidatePath = candidateURL.standardizedFileURL.path
+        guard candidatePath != dismissedClipboardMarkdownPath else {
+            clipboardMarkdownCandidate = nil
+            return
+        }
+
+        clipboardMarkdownCandidate = ClipboardMarkdownCandidate(url: candidateURL)
+    }
+
+    public func dismissClipboardMarkdownCandidate() {
+        dismissedClipboardMarkdownPath = clipboardMarkdownCandidate?.url.standardizedFileURL.path
+        clipboardMarkdownCandidate = nil
+    }
+
+    @discardableResult
+    public func openMarkdownFromPasteboard(pasteboard: NSPasteboard = .general) -> Bool {
+        let urls = ClipboardMarkdownDocumentResolver.markdownFileURLs(from: pasteboard)
+        guard urls.isEmpty == false else {
+            clipboardMarkdownCandidate = nil
+            return false
+        }
+
+        let didOpen = openFirstSupportedDocument(at: urls)
+        if didOpen {
+            dismissedClipboardMarkdownPath = nil
+            clipboardMarkdownCandidate = nil
+        } else {
+            refreshClipboardMarkdownCandidate(pasteboard: pasteboard)
+        }
+        return didOpen
     }
 
     @discardableResult
@@ -333,11 +398,18 @@ public final class AppState: ObservableObject {
             if didResolveAnchors {
                 scheduleAutosave(preservingSidecarLoadWarning: loadResult.warning != nil)
             }
+            recordRecentDocument(url)
+            refreshClipboardMarkdownCandidate()
             return true
         } catch {
             saveState = .failed(error.localizedDescription)
             return false
         }
+    }
+
+    private func recordRecentDocument(_ url: URL) {
+        recentDocumentStore.recordOpenedDocument(at: url)
+        recentDocumentURLs = recentDocumentStore.recentDocumentURLs()
     }
 
     public func selectHeading(_ heading: DocumentHeading) {
@@ -389,6 +461,18 @@ public final class AppState: ObservableObject {
         guard readerSelection != selection else {
             if selection != nil {
                 clearTransientAnnotationFailures()
+            }
+            return
+        }
+
+        if selection == nil, isAnnotationPopoverPresented {
+            // Opening the draft editor can move focus away from the reader and clear NSTextView selection.
+            clearTransientAnnotationFailures()
+            if scrollTargetHeadingID != nil {
+                scrollTargetHeadingID = nil
+            }
+            if scrollTargetRange != nil {
+                scrollTargetRange = nil
             }
             return
         }
@@ -492,6 +576,11 @@ public final class AppState: ObservableObject {
 
         panelMode = .annotations
         isAnnotationPopoverPresented = true
+    }
+
+    public func beginAnnotation(from selection: ReaderSelection) {
+        updateSelection(selection)
+        beginAnnotationFromCurrentSelection()
     }
 
     public func cancelAnnotation() {

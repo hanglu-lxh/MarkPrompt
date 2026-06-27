@@ -147,9 +147,9 @@ public enum MarkdownReaderLayoutMetrics {
     }
 
     public static func annotationButtonRect(
-        forSelectionRectInViewport selectionRect: CGRect,
+        forVisibleSelectionRect selectionRect: CGRect,
         viewportSize: CGSize,
-        buttonSize: CGSize = CGSize(width: 100, height: 32),
+        buttonSize: CGSize = CGSize(width: 72, height: 44),
         margin: CGFloat = 12,
         gap: CGFloat = 10
     ) -> CGRect? {
@@ -162,22 +162,55 @@ public enum MarkdownReaderLayoutMetrics {
         }
 
         let maximumX = max(margin, viewportSize.width - buttonSize.width - margin)
-        let rightSideX = selectionRect.maxX + gap
-        let leftSideX = selectionRect.minX - buttonSize.width - gap
-        let preferredX = if rightSideX + buttonSize.width <= viewportSize.width - margin {
-            rightSideX
-        } else if leftSideX >= margin {
-            leftSideX
-        } else {
-            min(maximumX, max(margin, rightSideX))
-        }
-
         let maximumY = max(margin, viewportSize.height - buttonSize.height - margin)
-        let preferredY = viewportSize.height - selectionRect.maxY
+        let preferredX = selectionRect.midX - buttonSize.width / 2
+        let aboveY = selectionRect.minY - buttonSize.height - gap
+        let belowY = selectionRect.maxY + gap
+        let preferredY = aboveY >= margin ? aboveY : belowY
         let x = min(maximumX, max(margin, preferredX))
         let y = min(maximumY, max(margin, preferredY))
 
         return CGRect(origin: CGPoint(x: x, y: y), size: buttonSize)
+    }
+
+    public static func annotationPopoverArrowEdge(
+        visibleSelectionRect: CGRect?,
+        annotationButtonRect: CGRect
+    ) -> Edge {
+        guard let visibleSelectionRect else {
+            return .leading
+        }
+
+        return annotationButtonRect.midX >= visibleSelectionRect.midX ? .leading : .trailing
+    }
+
+    public static func annotationPopoverRect(
+        forAnnotationButtonRect buttonRect: CGRect,
+        avoidingVisibleSelectionRect selectionRect: CGRect? = nil,
+        viewportSize: CGSize,
+        popoverSize: CGSize = CGSize(width: 380, height: 330),
+        margin: CGFloat = 12,
+        gap: CGFloat = 12
+    ) -> CGRect {
+        let maximumX = max(margin, viewportSize.width - popoverSize.width - margin)
+        let maximumY = max(margin, viewportSize.height - popoverSize.height - margin)
+        let preferredX = buttonRect.midX - popoverSize.width / 2
+        let upperBoundary = min(buttonRect.minY, selectionRect?.minY ?? buttonRect.minY)
+        let lowerBoundary = max(buttonRect.maxY, selectionRect?.maxY ?? buttonRect.maxY)
+        let aboveY = upperBoundary - popoverSize.height - gap
+        let belowY = lowerBoundary + gap
+        let preferredY = if belowY + popoverSize.height <= viewportSize.height - margin {
+            belowY
+        } else if aboveY >= margin {
+            aboveY
+        } else if buttonRect.midY < viewportSize.height / 2 {
+            belowY
+        } else {
+            aboveY
+        }
+        let x = min(maximumX, max(margin, preferredX))
+        let y = min(maximumY, max(margin, preferredY))
+        return CGRect(origin: CGPoint(x: x, y: y), size: popoverSize)
     }
 }
 
@@ -185,8 +218,11 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
     public var attributedText: NSAttributedString
     public var sourceMap: MarkdownSourceMap
     public var highlights: [AnnotationHighlight]
+    public var annotationButtonRect: CGRect?
+    public var isAnnotationButtonActive: Bool
     public var scrollTargetHeadingID: UUID?
     public var scrollTargetRange: RenderedTextRange?
+    public var onAnnotationButtonPress: () -> Void
     public var onSelectionChange: (ReaderSelection?) -> Void
     public var onScrollTargetConsumed: (UUID?, RenderedTextRange?) -> Void
     public var onVisibleHeadingChange: (UUID?) -> Void
@@ -195,8 +231,11 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         attributedText: NSAttributedString,
         sourceMap: MarkdownSourceMap,
         highlights: [AnnotationHighlight],
+        annotationButtonRect: CGRect? = nil,
+        isAnnotationButtonActive: Bool = false,
         scrollTargetHeadingID: UUID?,
         scrollTargetRange: RenderedTextRange?,
+        onAnnotationButtonPress: @escaping () -> Void = {},
         onSelectionChange: @escaping (ReaderSelection?) -> Void,
         onScrollTargetConsumed: @escaping (UUID?, RenderedTextRange?) -> Void = { _, _ in },
         onVisibleHeadingChange: @escaping (UUID?) -> Void = { _ in }
@@ -204,8 +243,11 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         self.attributedText = attributedText
         self.sourceMap = sourceMap
         self.highlights = highlights
+        self.annotationButtonRect = annotationButtonRect
+        self.isAnnotationButtonActive = isAnnotationButtonActive
         self.scrollTargetHeadingID = scrollTargetHeadingID
         self.scrollTargetRange = scrollTargetRange
+        self.onAnnotationButtonPress = onAnnotationButtonPress
         self.onSelectionChange = onSelectionChange
         self.onScrollTargetConsumed = onScrollTargetConsumed
         self.onVisibleHeadingChange = onVisibleHeadingChange
@@ -254,7 +296,13 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
 
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onVisibleHeadingChange = onVisibleHeadingChange
+        context.coordinator.onAnnotationButtonPress = onAnnotationButtonPress
         context.coordinator.sourceMap = sourceMap
+        context.coordinator.updateAnnotationButton(
+            in: scrollView,
+            rect: annotationButtonRect,
+            isActive: isAnnotationButtonActive
+        )
 
         let highlightSignature = highlights.map {
             "\($0.id):\($0.range.location):\($0.range.length):\($0.isSelected):\($0.isIncludedInPrompt):\($0.isAnchorLost)"
@@ -306,6 +354,12 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
 
         if let scrollTargetRange,
            context.coordinator.lastScrollTargetRange != scrollTargetRange {
+            let targetRange = scrollTargetRange.nsRange
+            let textLength = (textView.string as NSString).length
+            if targetRange.location != NSNotFound,
+               targetRange.location + targetRange.length <= textLength {
+                textView.setSelectedRange(targetRange)
+            }
             textView.scrollRangeToVisible(scrollTargetRange.nsRange)
             if scrollTargetRange.length > 0 {
                 textView.showFindIndicator(for: scrollTargetRange.nsRange)
@@ -405,6 +459,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         var sourceMap = MarkdownSourceMap()
         var onSelectionChange: (ReaderSelection?) -> Void = { _ in }
         var onVisibleHeadingChange: (UUID?) -> Void = { _ in }
+        var onAnnotationButtonPress: () -> Void = {}
         var lastRenderSignature = ""
         var lastHighlightSignature = ""
         var lastLayoutWidth: CGFloat = 0
@@ -413,9 +468,45 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         var lastEmittedSelection: ReaderSelection?
         var lastEmittedVisibleHeadingID: UUID?
         private weak var observedScrollView: NSScrollView?
+        private var annotationButton: AnnotationButton?
 
         deinit {
             NotificationCenter.default.removeObserver(self)
+        }
+
+        func updateAnnotationButton(in scrollView: NSScrollView, rect: CGRect?, isActive: Bool) {
+            guard let rect else {
+                annotationButton?.removeFromSuperview()
+                annotationButton = nil
+                return
+            }
+
+            let button = annotationButton ?? makeAnnotationButton()
+            if button.superview !== scrollView {
+                button.removeFromSuperview()
+                scrollView.addSubview(button, positioned: .above, relativeTo: nil)
+            }
+
+            button.onPress = { [weak self] in
+                self?.onAnnotationButtonPress()
+            }
+            button.applyAppearance(isActive: isActive)
+            let originY = scrollView.isFlipped ? rect.minY : scrollView.bounds.height - rect.maxY
+            button.frame = CGRect(x: rect.minX, y: originY, width: rect.width, height: rect.height)
+        }
+
+        private func makeAnnotationButton() -> AnnotationButton {
+            let button = AnnotationButton(title: "批注", target: nil, action: nil)
+            button.image = nil
+            button.isBordered = false
+            button.controlSize = .small
+            button.setButtonType(.momentaryPushIn)
+            button.focusRingType = .none
+            button.setAccessibilityLabel("批注")
+            button.toolTip = "添加批注"
+            button.wantsLayer = true
+            annotationButton = button
+            return button
         }
 
         func attach(to scrollView: NSScrollView) {
@@ -481,7 +572,8 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
                 selectedText: selectedText,
                 renderedRange: renderedRange,
                 sourceRange: sourceMap.sourceRange(containing: renderedRange),
-                selectionRect: selectionRect(in: textView, range: selectedRange)
+                visibleSelectionRect: visibleSelectionRect(in: textView, range: selectedRange),
+                annotationButtonRect: annotationButtonRect(in: textView, range: selectedRange)
             )
 
             emitSelection(selection)
@@ -545,7 +637,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
             return min(characterIndex, max(0, (textView.string as NSString).length - 1))
         }
 
-        private func selectionRect(in textView: NSTextView, range: NSRange) -> CGRect? {
+        private func visibleSelectionRect(in textView: NSTextView, range: NSRange) -> CGRect? {
             guard let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer,
                   let scrollView = textView.enclosingScrollView
@@ -560,12 +652,70 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
 
             let visibleRect = scrollView.documentVisibleRect
             let visibleSelectionRect = rect.intersection(visibleRect)
-            let anchorRect = visibleSelectionRect.isNull ? rect : visibleSelectionRect
-            let converted = textView.convert(anchorRect, to: scrollView)
+            guard visibleSelectionRect.isNull == false,
+                  visibleSelectionRect.isEmpty == false
+            else {
+                return nil
+            }
+
+            let converted = textView.convert(visibleSelectionRect, to: scrollView)
+            return CGRect(
+                x: converted.minX,
+                y: converted.minY,
+                width: converted.width,
+                height: converted.height
+            )
+        }
+
+        private func annotationButtonRect(in textView: NSTextView, range: NSRange) -> CGRect? {
+            guard let scrollView = textView.enclosingScrollView,
+                  let visibleSelectionRect = visibleSelectionRect(in: textView, range: range)
+            else {
+                return nil
+            }
+
             return MarkdownReaderLayoutMetrics.annotationButtonRect(
-                forSelectionRectInViewport: converted,
+                forVisibleSelectionRect: visibleSelectionRect,
                 viewportSize: scrollView.bounds.size
             )
         }
+    }
+}
+
+private final class AnnotationButton: NSButton {
+    var onPress: () -> Void = {}
+
+    func applyAppearance(isActive: Bool) {
+        wantsLayer = true
+        let foregroundColor = NSColor.systemOrange
+        let backgroundColor = NSColor.textBackgroundColor
+        let borderColor = isActive ? NSColor.systemOrange : NSColor.separatorColor
+
+        attributedTitle = NSAttributedString(
+            string: "批注",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+                .foregroundColor: foregroundColor
+            ]
+        )
+        contentTintColor = foregroundColor
+        layer?.cornerRadius = 8
+        layer?.borderWidth = isActive ? 1.2 : 1
+        layer?.borderColor = borderColor.cgColor
+        layer?.backgroundColor = backgroundColor.cgColor
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = isActive ? 0.2 : 0.14
+        layer?.shadowRadius = isActive ? 12 : 9
+        layer?.shadowOffset = CGSize(width: 0, height: 3)
+        layer?.masksToBounds = false
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onPress()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onPress()
+        return true
     }
 }

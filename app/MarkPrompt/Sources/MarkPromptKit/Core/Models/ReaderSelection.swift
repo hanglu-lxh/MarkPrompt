@@ -5,17 +5,20 @@ public struct ReaderSelection: Equatable, Sendable {
     public var selectedText: String
     public var renderedRange: RenderedTextRange
     public var sourceRange: SourceTextRange?
-    public var selectionRect: CGRect?
+    public var visibleSelectionRect: CGRect?
+    public var annotationButtonRect: CGRect?
 
     public init(
         selectedText: String,
         renderedRange: RenderedTextRange,
         sourceRange: SourceTextRange?,
-        selectionRect: CGRect? = nil
+        visibleSelectionRect: CGRect? = nil,
+        annotationButtonRect: CGRect? = nil
     ) {
         self.selectedText = selectedText
         self.renderedRange = renderedRange
         self.sourceRange = sourceRange
-        self.selectionRect = selectionRect
+        self.visibleSelectionRect = visibleSelectionRect
+        self.annotationButtonRect = annotationButtonRect
     }
 }

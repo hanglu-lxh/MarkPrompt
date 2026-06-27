@@ -14,12 +14,13 @@ public struct QuickPromptDefinition: Identifiable, Equatable, Sendable {
 
 public enum QuickPromptCatalog {
     public static let defaults: [QuickPromptDefinition] = [
-        QuickPromptDefinition(id: "improve-expression", label: "优化表达", insertedText: "请优化这段表达，让它更清晰、更直接，但保持原意。"),
-        QuickPromptDefinition(id: "rewrite-section", label: "重写这段", insertedText: "请重写这段内容，使结构更清楚，语气更适合产品文档。"),
-        QuickPromptDefinition(id: "improve-tone", label: "优化语气", insertedText: "请优化语气，让表达更自然、更适合目标读者。"),
-        QuickPromptDefinition(id: "add-evidence", label: "补充措施", insertedText: "请补充一个具体措施或示例，让这段更可执行。"),
-        QuickPromptDefinition(id: "strengthen-argument", label: "强化论证", insertedText: "请强化这段论证，补足因果关系和判断依据。"),
-        QuickPromptDefinition(id: "compress", label: "压缩精简", insertedText: "请压缩这段内容，删除重复表达，保留关键信息。")
+        QuickPromptDefinition(id: "polish", label: "润色", insertedText: "请润色这段内容，让表达更自然、更清晰，但保持原意。"),
+        QuickPromptDefinition(id: "rewrite", label: "重写", insertedText: "请重写这段内容，保留核心意思，但换一种更顺畅的表达方式。"),
+        QuickPromptDefinition(id: "expand", label: "扩写", insertedText: "请扩写这段内容，补足必要背景、细节或例子。"),
+        QuickPromptDefinition(id: "shorten", label: "缩短", insertedText: "请缩短这段内容，删除重复表达，保留关键信息。"),
+        QuickPromptDefinition(id: "fix-grammar", label: "修复语法", insertedText: "请修复这段内容的语法、标点和用词问题。"),
+        QuickPromptDefinition(id: "translate-en", label: "译为英文", insertedText: "请将这段内容翻译成自然、准确的英文。"),
+        QuickPromptDefinition(id: "translate-zh", label: "译为中文", insertedText: "请将这段内容翻译成自然、准确的中文。")
     ]
 
     public static func insertedComment(

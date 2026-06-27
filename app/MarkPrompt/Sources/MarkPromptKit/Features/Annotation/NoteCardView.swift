@@ -68,33 +68,30 @@ public struct NoteCardView: View {
             draftComment: draftComment
         )
 
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Circle()
-                    .fill(note.status == .anchorLost ? Color.orange : Color.yellow)
-                    .frame(width: 9, height: 9)
+        let isActive = appState.selectedNoteID == note.id || isEditing
 
-                Text(note.id)
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                AnnotationSourceQuoteView(text: note.anchor.selectedText, lineLimit: 2)
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                VStack(alignment: .trailing, spacing: 2) {
+                VStack(alignment: .trailing, spacing: 3) {
                     Text(inclusion.label)
                         .font(.caption.weight(.semibold))
                     Text(inclusion.detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                }
 
-                Toggle("", isOn: Binding(
-                    get: { inclusion.isToggleOn },
-                    set: { appState.setNoteIncluded(id: note.id, includeInPrompt: $0) }
-                ))
-                .labelsHidden()
-                .disabled(note.status == .excluded)
-                .help("是否纳入 Prompt")
-                .accessibilityLabel(inclusion.label)
+                    Toggle("", isOn: Binding(
+                        get: { inclusion.isToggleOn },
+                        set: { appState.setNoteIncluded(id: note.id, includeInPrompt: $0) }
+                    ))
+                    .labelsHidden()
+                    .disabled(note.status == .excluded)
+                    .help("是否纳入 Prompt")
+                    .accessibilityLabel(inclusion.label)
+                }
             }
 
             if note.status == .anchorLost {
@@ -103,90 +100,112 @@ public struct NoteCardView: View {
                     .foregroundStyle(.orange)
             }
 
-            Text("选中文本")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(note.anchor.selectedText)
-                .font(.callout)
-                .lineLimit(3)
+            if note.quickPrompts.isEmpty == false {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(note.quickPrompts, id: \.id) { quickPrompt in
+                        AnnotationQuickPromptLabel(title: quickPrompt.label)
+                    }
+                }
+            }
 
-            Text("批注意见")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if isEditing {
+            if isActive {
                 TextEditor(text: $draftComment)
-                    .frame(minHeight: 76)
+                    .font(.body)
+                    .frame(minHeight: 96)
                     .focused($isCommentFocused)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(
+                                isCommentFocused ? Color(nsColor: .secondaryLabelColor) : Color(nsColor: .separatorColor),
+                                lineWidth: isCommentFocused ? 1.4 : 1
+                            )
                     )
                     .onAppear {
-                        isCommentFocused = true
+                        if isEditing {
+                            focusCommentEditor()
+                        }
                     }
+            } else {
+                Text(note.comment)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+            }
 
-                HStack {
+            HStack(spacing: 12) {
+                Button(role: .destructive) {
+                    appState.deleteNote(id: note.id)
+                } label: {
+                    Label("删除", systemImage: "trash")
+                        .font(.callout)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+
+                if isEditing {
                     Button("取消") {
                         draftComment = note.comment
                         isEditing = false
                         isCommentFocused = false
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                     .keyboardShortcut(.cancelAction)
-
-                    Spacer()
-
-                    Button("保存") {
-                        appState.updateNoteComment(id: note.id, comment: editPresentation.trimmedComment)
-                        isEditing = false
-                        isCommentFocused = false
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!editPresentation.canSave)
                 }
-                .controlSize(.small)
-            } else {
-                Text(note.comment)
-                    .font(.callout)
-            }
 
-            HStack(spacing: 8) {
                 Button {
                     appState.selectNote(id: note.id)
                 } label: {
                     Label("定位", systemImage: "scope")
                 }
-
-                Button {
-                    draftComment = note.comment
-                    isEditing = true
-                    isCommentFocused = true
-                } label: {
-                    Label("编辑", systemImage: "pencil")
-                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
 
                 Spacer()
 
-                Button(role: .destructive) {
-                    appState.deleteNote(id: note.id)
+                Button {
+                    if isActive {
+                        appState.updateNoteComment(id: note.id, comment: editPresentation.trimmedComment)
+                        isEditing = false
+                        isCommentFocused = false
+                    } else {
+                        draftComment = note.comment
+                        isEditing = true
+                        isCommentFocused = true
+                        focusCommentEditor()
+                    }
                 } label: {
-                    Label("删除", systemImage: "trash")
+                    AnnotationPrimaryPillLabel(
+                        title: "修改批注",
+                        systemImage: isActive ? "checkmark" : "pencil",
+                        isEnabled: !(isActive && !editPresentation.canSave)
+                    )
                 }
+                .buttonStyle(.plain)
+                .disabled(isActive && !editPresentation.canSave)
             }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
         }
         .padding(12)
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(appState.selectedNoteID == note.id ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1)
+                .stroke(isActive ? Color.orange : Color(nsColor: .separatorColor), lineWidth: isActive ? 1.4 : 1)
         )
         .opacity(inclusion.isToggleOn ? 1 : 0.62)
         .onTapGesture {
-            guard NoteCardTapBehavior.shouldSelectNote(isEditing: isEditing) else {
+            guard NoteCardTapBehavior.shouldSelectNote(isEditing: isActive) else {
                 return
             }
 
@@ -194,6 +213,22 @@ public struct NoteCardView: View {
         }
         .onAppear {
             draftComment = note.comment
+        }
+        .onChange(of: appState.selectedNoteID) {
+            guard appState.selectedNoteID == note.id else {
+                isCommentFocused = false
+                return
+            }
+            draftComment = note.comment
+        }
+        .onChange(of: note.comment) {
+            draftComment = note.comment
+        }
+    }
+
+    private func focusCommentEditor() {
+        DispatchQueue.main.async {
+            isCommentFocused = true
         }
     }
 }

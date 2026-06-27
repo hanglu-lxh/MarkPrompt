@@ -101,7 +101,7 @@ final class ReviewSessionCodableTests: XCTestCase {
     func testQuickPromptCatalogContainsRequiredPromptsAndAppendsText() {
         let labels = QuickPromptCatalog.defaults.map(\.label)
 
-        XCTAssertEqual(labels, ["优化表达", "重写这段", "优化语气", "补充措施", "强化论证", "压缩精简"])
+        XCTAssertEqual(labels, ["润色", "重写", "扩写", "缩短", "修复语法", "译为英文", "译为中文"])
         XCTAssertEqual(
             QuickPromptCatalog.insertedComment(currentComment: "", definition: QuickPromptCatalog.defaults[0]),
             QuickPromptCatalog.defaults[0].insertedText

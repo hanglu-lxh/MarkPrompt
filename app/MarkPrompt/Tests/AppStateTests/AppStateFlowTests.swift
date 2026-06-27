@@ -320,6 +320,31 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertFalse(state.isAnnotationPopoverPresented)
     }
 
+    func testClearingSelectionWhileAnnotationPopoverIsOpenKeepsDraftPopover() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceURL = temp.appendingPathComponent("sample_prd.md")
+        try sampleSource().write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        state.openDocument(at: sourceURL)
+        let document = try XCTUnwrap(state.currentDocument)
+        let selection = try makeSelection(text: "核心价值", in: document)
+
+        state.updateSelection(selection)
+        state.beginAnnotationFromCurrentSelection()
+        XCTAssertTrue(state.isAnnotationPopoverPresented)
+
+        state.updateSelection(nil)
+
+        XCTAssertEqual(state.readerSelection, selection)
+        XCTAssertTrue(state.canCreateAnnotation)
+        XCTAssertTrue(state.isAnnotationPopoverPresented)
+    }
+
     func testSelectingNoteClearsTransientReaderSelectionAndFloatingAnnotationEntry() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -1221,7 +1246,7 @@ final class AppStateFlowTests: XCTestCase {
             ),
             AnnotationPopoverPresentation(
                 selectedTextPreview: "核心价值",
-                shortcutHint: "保存 Return · 取消 Esc",
+                shortcutHint: "保存 ⌘↩ · 取消 Esc",
                 canSave: false
             )
         )
@@ -3116,7 +3141,8 @@ final class AppStateFlowTests: XCTestCase {
             selectedText: text,
             renderedRange: renderedRange,
             sourceRange: document.renderModel.sourceMap.sourceRange(containing: renderedRange),
-            selectionRect: CGRect(x: 120, y: 120, width: 100, height: 32)
+            visibleSelectionRect: CGRect(x: 120, y: 120, width: 100, height: 24),
+            annotationButtonRect: CGRect(x: 230, y: 116, width: 100, height: 32)
         )
     }
 
