@@ -33,37 +33,37 @@ final class ReaderFixtureRenderingTests: XCTestCase {
             forVisibleSelectionRect: CGRect(x: 120, y: 220, width: 80, height: 24),
             viewportSize: viewport
         ))
-        XCTAssertEqual(normal.origin.x, 124, accuracy: 0.01)
-        XCTAssertEqual(normal.origin.y, 166, accuracy: 0.01)
-        XCTAssertEqual(normal.maxX, 196, accuracy: 0.01)
+        XCTAssertEqual(normal.origin.x, 208, accuracy: 0.01)
+        XCTAssertEqual(normal.origin.y, 214, accuracy: 0.01)
+        XCTAssertEqual(normal.maxX, 292, accuracy: 0.01)
 
         let nearRightEdge = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
             forVisibleSelectionRect: CGRect(x: 450, y: 220, width: 42, height: 24),
             viewportSize: viewport
         ))
-        XCTAssertEqual(nearRightEdge.origin.x, 416, accuracy: 0.01)
-        XCTAssertEqual(nearRightEdge.origin.y, 166, accuracy: 0.01)
+        XCTAssertEqual(nearRightEdge.origin.x, 358, accuracy: 0.01)
+        XCTAssertEqual(nearRightEdge.origin.y, 214, accuracy: 0.01)
 
         let nearTopEdge = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
             forVisibleSelectionRect: CGRect(x: 180, y: 4, width: 120, height: 18),
             viewportSize: viewport
         ))
-        XCTAssertEqual(nearTopEdge.origin.x, 204, accuracy: 0.01)
-        XCTAssertEqual(nearTopEdge.origin.y, 32, accuracy: 0.01)
+        XCTAssertEqual(nearTopEdge.origin.x, 308, accuracy: 0.01)
+        XCTAssertEqual(nearTopEdge.origin.y, 12, accuracy: 0.01)
 
         let nearBottomEdge = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
             forVisibleSelectionRect: CGRect(x: 180, y: 576, width: 120, height: 18),
             viewportSize: viewport
         ))
-        XCTAssertEqual(nearBottomEdge.origin.x, 204, accuracy: 0.01)
-        XCTAssertEqual(nearBottomEdge.origin.y, 522, accuracy: 0.01)
+        XCTAssertEqual(nearBottomEdge.origin.x, 308, accuracy: 0.01)
+        XCTAssertEqual(nearBottomEdge.origin.y, 552, accuracy: 0.01)
 
         let tallVisibleSelection = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
             forVisibleSelectionRect: CGRect(x: 90, y: 240, width: 280, height: 96),
             viewportSize: viewport
         ))
-        XCTAssertEqual(tallVisibleSelection.origin.x, 194, accuracy: 0.01)
-        XCTAssertEqual(tallVisibleSelection.origin.y, 186, accuracy: 0.01)
+        XCTAssertEqual(tallVisibleSelection.origin.x, 378, accuracy: 0.01)
+        XCTAssertEqual(tallVisibleSelection.origin.y, 270, accuracy: 0.01)
 
         let oversizedSelection = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
             forVisibleSelectionRect: CGRect(x: -30, y: -40, width: 640, height: 720),
@@ -73,6 +73,16 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(oversizedSelection.minY, 12)
         XCTAssertLessThanOrEqual(oversizedSelection.maxX, viewport.width - 12)
         XCTAssertLessThanOrEqual(oversizedSelection.maxY, viewport.height - 12)
+    }
+
+    func testAnnotationButtonRectFallsBackAboveWhenSelectionConsumesSideGutters() throws {
+        let buttonRect = try XCTUnwrap(MarkdownReaderLayoutMetrics.annotationButtonRect(
+            forVisibleSelectionRect: CGRect(x: 40, y: 220, width: 420, height: 24),
+            viewportSize: CGSize(width: 500, height: 600)
+        ))
+
+        XCTAssertEqual(buttonRect.origin.x, 208, accuracy: 0.01)
+        XCTAssertEqual(buttonRect.origin.y, 176, accuracy: 0.01)
     }
 
     func testAnnotationPopoverArrowEdgePointsBackTowardSelection() {
@@ -233,6 +243,521 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         )
     }
 
+    func testReaderTextViewTaskMarkerHitTestingUsesOnlyCheckboxGlyph() throws {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "☐ Review anchor recovery")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 80),
+            textContainer: textContainer
+        )
+        layoutManager.ensureLayout(for: textContainer)
+
+        XCTAssertEqual(textView.taskMarkerSourceRange(atCharacterIndex: 0), markerRange)
+        XCTAssertNil(textView.taskMarkerSourceRange(atCharacterIndex: 2))
+        XCTAssertNil(textView.taskMarkerSourceRange(atCharacterIndex: attributed.length))
+
+        let markerGlyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: 0, length: 1),
+            actualCharacterRange: nil
+        )
+        var markerRect = layoutManager.boundingRect(
+            forGlyphRange: markerGlyphRange,
+            in: textContainer
+        )
+        markerRect.origin.x += textView.textContainerOrigin.x
+        markerRect.origin.y += textView.textContainerOrigin.y
+
+        let markerHitRect = try XCTUnwrap(textView.taskMarkerHitRect(atCharacterIndex: 0))
+        XCTAssertTrue(markerHitRect.contains(NSPoint(x: markerRect.midX, y: markerRect.midY)))
+        XCTAssertFalse(markerHitRect.contains(NSPoint(x: markerRect.maxX + 12, y: markerRect.midY)))
+        XCTAssertNil(textView.taskMarkerHitRect(atCharacterIndex: 2))
+        XCTAssertEqual(textView.taskMarkerHitRects(), [markerHitRect])
+
+        XCTAssertEqual(
+            textView.taskMarkerSourceRange(at: NSPoint(x: markerRect.midX, y: markerRect.midY)),
+            markerRange
+        )
+        XCTAssertNil(textView.taskMarkerSourceRange(at: NSPoint(x: markerRect.maxX + 12, y: markerRect.midY)))
+    }
+
+    func testReaderTextViewKeyboardToggleUsesOnlyCheckboxSelection() {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "◩ Review anchor recovery")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerCharacter"),
+            value: "/",
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 80),
+            textContainer: textContainer
+        )
+
+        textView.setSelectedRange(NSRange(location: 0, length: 1))
+        XCTAssertEqual(textView.taskMarkerSourceRangeForKeyboardToggle(), markerRange)
+
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        XCTAssertEqual(textView.taskMarkerSourceRangeForKeyboardToggle(), markerRange)
+
+        textView.setSelectedRange(NSRange(location: 2, length: 1))
+        XCTAssertNil(textView.taskMarkerSourceRangeForKeyboardToggle())
+
+        textView.setSelectedRange(NSRange(location: 0, length: 3))
+        XCTAssertNil(textView.taskMarkerSourceRangeForKeyboardToggle())
+    }
+
+    func testReaderTextViewKeyboardToggleIgnoresModifiedSpaceShortcuts() {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "◩ Review anchor recovery")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 80),
+            textContainer: textContainer
+        )
+        var toggleCount = 0
+        textView.onTaskMarkerClick = { sourceRange in
+            XCTAssertEqual(sourceRange, markerRange)
+            toggleCount += 1
+            return true
+        }
+        textView.setSelectedRange(NSRange(location: 0, length: 1))
+
+        textView.keyDown(with: spaceKeyEvent())
+        XCTAssertEqual(toggleCount, 1)
+
+        for flags in [NSEvent.ModifierFlags.command, .option, .control] {
+            textView.keyDown(with: spaceKeyEvent(modifierFlags: flags))
+        }
+        XCTAssertEqual(toggleCount, 1)
+    }
+
+    func testReaderTextViewTaskMarkerCommandTogglesOnlyCheckboxSelection() {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "◩ Review anchor recovery")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 80),
+            textContainer: textContainer
+        )
+        let commandSelector = #selector(ReaderTextView.toggleTaskMarkerStatus(_:))
+        var receivedSourceRange: SourceTextRange?
+        textView.onTaskMarkerClick = { sourceRange in
+            receivedSourceRange = sourceRange
+            return true
+        }
+
+        textView.setSelectedRange(NSRange(location: 0, length: 1))
+
+        XCTAssertTrue(textView.responds(to: commandSelector))
+        XCTAssertTrue(textView.tryToPerform(commandSelector, with: nil))
+        XCTAssertEqual(receivedSourceRange, markerRange)
+
+        let forwardedTextView = ReaderTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 80), textContainer: nil)
+        let probeResponder = TaskMarkerCommandProbeResponder()
+        forwardedTextView.nextResponder = probeResponder
+
+        XCTAssertTrue(forwardedTextView.tryToPerform(commandSelector, with: nil))
+        XCTAssertEqual(probeResponder.toggleCount, 1)
+    }
+
+    func testReaderTextViewValidatesTaskMarkerCommandOnlyForCheckboxSelection() {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "◩ Review anchor recovery")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 80),
+            textContainer: textContainer
+        )
+        let commandItem = NSMenuItem(
+            title: "切换任务状态",
+            action: #selector(ReaderTextView.toggleTaskMarkerStatus(_:)),
+            keyEquivalent: "l"
+        )
+
+        textView.setSelectedRange(NSRange(location: 0, length: 1))
+        XCTAssertTrue(textView.validateUserInterfaceItem(commandItem))
+
+        textView.setSelectedRange(NSRange(location: 2, length: 1))
+        XCTAssertFalse(textView.validateUserInterfaceItem(commandItem))
+
+        textView.setSelectedRange(NSRange(location: 0, length: 3))
+        XCTAssertFalse(textView.validateUserInterfaceItem(commandItem))
+    }
+
+    func testReaderTextViewTaskMarkerNavigationMovesSelectionBetweenCheckboxes() {
+        let attributed = NSMutableAttributedString(string: "☐ First task\nBody copy\n◩ Second task\n☑ Third task")
+        let firstIndex = 0
+        let secondIndex = (attributed.string as NSString).range(of: "◩").location
+        let thirdIndex = (attributed.string as NSString).range(of: "☑").location
+        for (index, sourceLocation) in [(firstIndex, 2), (secondIndex, 18), (thirdIndex, 36)] {
+            attributed.addAttribute(
+                NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+                value: SourceTextRange(lowerBound: sourceLocation, upperBound: sourceLocation + 3),
+                range: NSRange(location: index, length: 1)
+            )
+        }
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 360, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 360, height: 120),
+            textContainer: textContainer
+        )
+        let nextSelector = #selector(ReaderTextView.selectNextTaskMarker(_:))
+        let previousSelector = #selector(ReaderTextView.selectPreviousTaskMarker(_:))
+
+        textView.setSelectedRange(NSRange(location: firstIndex, length: 1))
+
+        XCTAssertTrue(textView.responds(to: nextSelector))
+        XCTAssertTrue(textView.tryToPerform(nextSelector, with: nil))
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: secondIndex, length: 1))
+
+        XCTAssertTrue(textView.tryToPerform(nextSelector, with: nil))
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: thirdIndex, length: 1))
+
+        XCTAssertTrue(textView.tryToPerform(nextSelector, with: nil))
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: firstIndex, length: 1))
+
+        XCTAssertTrue(textView.responds(to: previousSelector))
+        XCTAssertTrue(textView.tryToPerform(previousSelector, with: nil))
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: thirdIndex, length: 1))
+
+        textView.setSelectedRange(NSRange(location: 4, length: 1))
+        XCTAssertTrue(textView.tryToPerform(nextSelector, with: nil))
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: secondIndex, length: 1))
+    }
+
+    func testReaderTextViewValidatesTaskMarkerNavigationOnlyWhenTasksExist() {
+        let attributed = NSMutableAttributedString(string: "☐ First task")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: SourceTextRange(lowerBound: 2, upperBound: 5),
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 320, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 80),
+            textContainer: textContainer
+        )
+        let nextItem = NSMenuItem(
+            title: "下一个任务",
+            action: #selector(ReaderTextView.selectNextTaskMarker(_:)),
+            keyEquivalent: "j"
+        )
+        let previousItem = NSMenuItem(
+            title: "上一个任务",
+            action: #selector(ReaderTextView.selectPreviousTaskMarker(_:)),
+            keyEquivalent: "k"
+        )
+
+        XCTAssertTrue(textView.validateUserInterfaceItem(nextItem))
+        XCTAssertTrue(textView.validateUserInterfaceItem(previousItem))
+
+        let emptyTextView = ReaderTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 80), textContainer: nil)
+        XCTAssertFalse(emptyTextView.validateUserInterfaceItem(nextItem))
+        XCTAssertFalse(emptyTextView.validateUserInterfaceItem(previousItem))
+    }
+
+    func testReaderTextViewUndoActionDelegatesToTaskMarkerUndoHandler() {
+        let textView = ReaderTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 80), textContainer: nil)
+        var undoCount = 0
+
+        textView.onTaskMarkerUndo = {
+            undoCount += 1
+            return true
+        }
+
+        textView.undo(nil)
+
+        XCTAssertEqual(undoCount, 1)
+
+        let forwardedTextView = ReaderTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 80), textContainer: nil)
+        let probeResponder = UndoProbeResponder()
+        var rejectedUndoCount = 0
+        forwardedTextView.nextResponder = probeResponder
+        forwardedTextView.onTaskMarkerUndo = {
+            rejectedUndoCount += 1
+            return false
+        }
+
+        forwardedTextView.undo(nil)
+
+        XCTAssertEqual(rejectedUndoCount, 1)
+        XCTAssertEqual(probeResponder.undoCount, 1)
+    }
+
+    func testReaderTextViewTaskMarkerContextMenuOffersStatusChangesOnlyOnCheckboxGlyph() throws {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "◩ Review anchor recovery")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerCharacter"),
+            value: "/",
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 80),
+            textContainer: textContainer
+        )
+        layoutManager.ensureLayout(for: textContainer)
+
+        let markerGlyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: 0, length: 1),
+            actualCharacterRange: nil
+        )
+        var markerRect = layoutManager.boundingRect(
+            forGlyphRange: markerGlyphRange,
+            in: textContainer
+        )
+        markerRect.origin.x += textView.textContainerOrigin.x
+        markerRect.origin.y += textView.textContainerOrigin.y
+
+        let menu = try XCTUnwrap(textView.taskMarkerStatusMenu(at: NSPoint(x: markerRect.midX, y: markerRect.midY)))
+        XCTAssertEqual(menu.title, "任务状态：进行中")
+        XCTAssertEqual(menu.items.map(\.title), [
+            "标记为待办",
+            "标记为完成",
+            "标记为取消",
+            "当前：进行中",
+            "标记为重要"
+        ])
+        let currentItem = try XCTUnwrap(menu.items.first { $0.title == "当前：进行中" })
+        XCTAssertEqual(currentItem.state, .on)
+        XCTAssertFalse(currentItem.isEnabled)
+        XCTAssertEqual(currentItem.toolTip, "当前状态：进行中。选择其它状态只更改这一项任务，阅读位置保持不变。")
+        let importantItem = try XCTUnwrap(menu.items.first { $0.title == "标记为重要" })
+        XCTAssertEqual(importantItem.toolTip, "将当前任务标记为重要；只更改这一项任务，阅读位置保持不变")
+        XCTAssertEqual(importantItem.accessibilityLabel(), "将当前任务标记为重要")
+        XCTAssertEqual(importantItem.accessibilityHelp(), "只更改这一项任务；菜单关闭后阅读位置保持不变")
+        XCTAssertNil(textView.taskMarkerStatusMenu(at: NSPoint(x: markerRect.maxX + 12, y: markerRect.midY)))
+
+        var receivedSourceRange: SourceTextRange?
+        var receivedMarkerCharacter: String?
+        textView.onTaskMarkerStatusChange = { sourceRange, markerCharacter in
+            receivedSourceRange = sourceRange
+            receivedMarkerCharacter = markerCharacter
+            return true
+        }
+
+        textView.changeTaskMarkerStatus(importantItem)
+
+        XCTAssertEqual(receivedSourceRange, markerRange)
+        XCTAssertEqual(receivedMarkerCharacter, "!")
+    }
+
+    func testReaderTextViewTaskMarkerContextMenuTreatsCustomCompletedMarkersAsCurrentCompleted() throws {
+        let markerRange = SourceTextRange(lowerBound: 12, upperBound: 15)
+        let attributed = NSMutableAttributedString(string: "☑ Arbitrary completed review task")
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"),
+            value: markerRange,
+            range: NSRange(location: 0, length: 1)
+        )
+        attributed.addAttribute(
+            NSAttributedString.Key("MarkPromptTaskMarkerCharacter"),
+            value: "a",
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 320, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 320, height: 80),
+            textContainer: textContainer
+        )
+        layoutManager.ensureLayout(for: textContainer)
+
+        let markerRect = try XCTUnwrap(textView.taskMarkerHitRect(atCharacterIndex: 0))
+        let menu = try XCTUnwrap(textView.taskMarkerStatusMenu(at: NSPoint(x: markerRect.midX, y: markerRect.midY)))
+
+        XCTAssertEqual(menu.title, "任务状态：完成")
+        XCTAssertEqual(menu.items.map(\.title), [
+            "标记为待办",
+            "当前：完成",
+            "标记为取消",
+            "标记为进行中",
+            "标记为重要"
+        ])
+        let currentItem = try XCTUnwrap(menu.items.first { $0.title == "当前：完成" })
+        XCTAssertFalse(currentItem.isEnabled)
+        XCTAssertEqual(currentItem.state, .on)
+    }
+
+    func testReaderTextViewExposesTaskMarkersAsAccessibleCheckboxes() throws {
+        let openRange = SourceTextRange(lowerBound: 2, upperBound: 5)
+        let doneRange = SourceTextRange(lowerBound: 32, upperBound: 35)
+        let attributed = NSMutableAttributedString(string: "☐ Review anchor recovery\n☑ Confirm local-first behavior")
+        attributed.addAttributes(
+            [
+                NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"): openRange,
+                NSAttributedString.Key("MarkPromptTaskMarkerCharacter"): " "
+            ],
+            range: NSRange(location: 0, length: 1)
+        )
+        attributed.addAttributes(
+            [
+                NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"): doneRange,
+                NSAttributedString.Key("MarkPromptTaskMarkerCharacter"): "x"
+            ],
+            range: NSRange(location: 25, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 360, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 360, height: 120),
+            textContainer: textContainer
+        )
+        layoutManager.ensureLayout(for: textContainer)
+
+        let accessibleTasks = try XCTUnwrap(textView.accessibilityChildren()?.filter {
+            ($0 as? NSAccessibilityElement)?.accessibilityRole() == .checkBox
+        })
+        XCTAssertEqual(accessibleTasks.count, 2)
+
+        let firstTask = try XCTUnwrap(accessibleTasks.first as? NSAccessibilityElement)
+        XCTAssertEqual(firstTask.accessibilityLabel(), "任务：Review anchor recovery")
+        XCTAssertEqual(firstTask.accessibilityValue() as? NSNumber, NSNumber(value: false))
+        XCTAssertEqual(firstTask.accessibilityValueDescription(), "待办")
+        XCTAssertEqual(
+            firstTask.accessibilityHelp(),
+            "状态：待办。按 Space 或 Return 切换完成/待办；右键或自定义动作可设为待办、完成、取消、进行中、重要；⌘⌥J/K 跳到上/下一个任务。"
+        )
+        XCTAssertEqual(firstTask.accessibilityParent() as? ReaderTextView, textView)
+
+        let secondTask = try XCTUnwrap(accessibleTasks.last as? NSAccessibilityElement)
+        XCTAssertEqual(secondTask.accessibilityLabel(), "任务：Confirm local-first behavior")
+        XCTAssertEqual(secondTask.accessibilityValue() as? NSNumber, NSNumber(value: true))
+        XCTAssertEqual(secondTask.accessibilityValueDescription(), "完成")
+        XCTAssertEqual(
+            secondTask.accessibilityHelp(),
+            "状态：完成。按 Space 或 Return 切换完成/待办；右键或自定义动作可设为待办、完成、取消、进行中、重要；⌘⌥J/K 跳到上/下一个任务。"
+        )
+
+        var pressedSourceRange: SourceTextRange?
+        textView.onTaskMarkerClick = { sourceRange in
+            pressedSourceRange = sourceRange
+            return true
+        }
+
+        XCTAssertTrue(firstTask.accessibilityPerformPress())
+        XCTAssertEqual(pressedSourceRange, openRange)
+    }
+
+    func testReaderTextViewAccessibleTaskCheckboxOffersStatusActions() throws {
+        let markerRange = SourceTextRange(lowerBound: 18, upperBound: 21)
+        let attributed = NSMutableAttributedString(string: "◩ Investigate annotation anchor drift")
+        attributed.addAttributes(
+            [
+                NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"): markerRange,
+                NSAttributedString.Key("MarkPromptTaskMarkerCharacter"): "/"
+            ],
+            range: NSRange(location: 0, length: 1)
+        )
+        let textStorage = NSTextStorage(attributedString: attributed)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 360, height: CGFloat.greatestFiniteMagnitude))
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 360, height: 80),
+            textContainer: textContainer
+        )
+        layoutManager.ensureLayout(for: textContainer)
+
+        let accessibleTask = try XCTUnwrap(textView.accessibilityChildren()?.compactMap {
+            $0 as? NSAccessibilityElement
+        }.first { $0.accessibilityRole() == .checkBox })
+        XCTAssertEqual(accessibleTask.accessibilityValue() as? NSNumber, NSNumber(value: false))
+        XCTAssertEqual(accessibleTask.accessibilityValueDescription(), "进行中")
+        let actions = try XCTUnwrap(accessibleTask.accessibilityCustomActions())
+        XCTAssertEqual(actions.map(\.name), [
+            "仅当前任务：标记为待办",
+            "仅当前任务：标记为完成",
+            "仅当前任务：标记为取消",
+            "仅当前任务：标记为重要"
+        ])
+
+        var receivedSourceRange: SourceTextRange?
+        var receivedMarkerCharacter: String?
+        textView.onTaskMarkerStatusChange = { sourceRange, markerCharacter in
+            receivedSourceRange = sourceRange
+            receivedMarkerCharacter = markerCharacter
+            return true
+        }
+
+        let importantAction = try XCTUnwrap(actions.first { $0.name == "仅当前任务：标记为重要" })
+        XCTAssertTrue(try XCTUnwrap(importantAction.handler?()))
+        XCTAssertEqual(receivedSourceRange, markerRange)
+        XCTAssertEqual(receivedMarkerCharacter, "!")
+    }
+
     func testFixtureSpecificRenderingExpectations() throws {
         let documents = try parsedFixturesByName()
 
@@ -256,6 +781,10 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("snake_case"))
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("a_b_c"))
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("2 * 3"))
+        XCTAssertTrue(inline.renderModel.renderedPlainText.contains("#reader/tag"))
+        XCTAssertTrue(inline.renderModel.renderedPlainText.contains("#not-a-tag"))
+        XCTAssertTrue(inline.renderModel.renderedPlainText.contains("https://example.com/live-url"))
+        XCTAssertTrue(inline.renderModel.renderedPlainText.contains("https://example.com/code-url"))
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("*not italic*"))
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("_not emphasis_"))
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("[not a link](https://example.com/no-link)"))
@@ -271,6 +800,7 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertFalse(inline.renderModel.renderedPlainText.contains("================================="))
         XCTAssertFalse(inline.renderModel.renderedPlainText.contains("------------------------------------------------------------"))
         XCTAssertTrue(inline.renderModel.renderedPlainText.contains("API design remains readable"))
+        XCTAssertTrue(inline.renderModel.renderedPlainText.contains("API() should stay code"))
         XCTAssertFalse(inline.renderModel.renderedPlainText.contains("Application Programming Interface"))
         XCTAssertFalse(inline.renderModel.renderedPlainText.contains("~~removed wording~~"))
         XCTAssertTrue(inline.outline.flattened().contains { $0.title == "Setext H1 with heading code" })
@@ -279,6 +809,12 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertTrue(hasSuperscriptAttribute(for: "x2", character: "2", in: inline.renderModel.attributedText))
         XCTAssertTrue(hasBackgroundAttribute(for: "heading code", in: inline.renderModel.attributedText))
         XCTAssertTrue(hasBackgroundAttribute(for: "highlighted decisions", in: inline.renderModel.attributedText))
+        XCTAssertTrue(hasBackgroundAttribute(for: "#reader/tag", in: inline.renderModel.attributedText))
+        XCTAssertFalse(hasFixedPitchFont(for: "#reader/tag", in: inline.renderModel.attributedText))
+        XCTAssertTrue(hasFixedPitchFont(for: "#not-a-tag", in: inline.renderModel.attributedText))
+        XCTAssertTrue(hasLinkAttribute("https://example.com/live-url", in: inline.renderModel.attributedText))
+        XCTAssertNil(attribute(.link, for: "https://example.com/code-url", in: inline.renderModel.attributedText))
+        XCTAssertTrue(hasFixedPitchFont(for: "https://example.com/code-url", in: inline.renderModel.attributedText))
         XCTAssertTrue(hasSingleUnderline(for: "inserted wording", in: inline.renderModel.attributedText))
         XCTAssertTrue(hasLinkAttribute("https://example.com/setext", in: inline.renderModel.attributedText))
         XCTAssertEqual(
@@ -286,17 +822,65 @@ final class ReaderFixtureRenderingTests: XCTestCase {
             "Application Programming Interface"
         )
         XCTAssertTrue(hasDottedUnderline(for: "API design", in: inline.renderModel.attributedText))
+        XCTAssertNil(attribute(.toolTip, for: "API()", in: inline.renderModel.attributedText))
+        XCTAssertFalse(hasDottedUnderline(for: "API()", in: inline.renderModel.attributedText))
+        XCTAssertTrue(hasFixedPitchFont(for: "API()", in: inline.renderModel.attributedText))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Setext H1 with heading code", kind: .heading, in: inline))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Second line should stay visually separated", kind: .paragraph, in: inline))
 
         let lists = try XCTUnwrap(documents["02_lists_tasks.md"])
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("☑ Confirm local-first behavior"))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("☐ Review anchor recovery"))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("☒ Reject stale prompt draft"))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("◩ Investigate annotation anchor drift"))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("⚠ Escalate blocked review note"))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("☑ Arbitrary completed review task"))
+        XCTAssertNotNil(attribute(NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"), for: "☑ Confirm local-first behavior", in: lists.renderModel.attributedText))
+        XCTAssertNil(attribute(NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"), for: "Confirm local-first behavior", in: lists.renderModel.attributedText))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "☑ Confirm local-first behavior", in: lists.renderModel.attributedText) as? String,
+            "点击或按 Space/⌘L 切换完成/待办；⌘⌥J/K 跳转任务；右键可标记待办/完成/取消/进行中/重要。"
+        )
+        XCTAssertTrue(hasStrikethroughAttribute(for: "Confirm local-first behavior", in: lists.renderModel.attributedText))
+        XCTAssertTrue(hasStrikethroughAttribute(for: "Done evidence should inherit the completed state.", in: lists.renderModel.attributedText))
+        XCTAssertTrue(hasStrikethroughAttribute(for: "Arbitrary completed review task", in: lists.renderModel.attributedText))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "Review anchor recovery", in: lists.renderModel.attributedText))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "Continuation should stay part of the task item", in: lists.renderModel.attributedText))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "Investigate annotation anchor drift", in: lists.renderModel.attributedText))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "Escalate blocked review note", in: lists.renderModel.attributedText))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("[-] Reject stale prompt draft"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("[/] Investigate annotation anchor drift"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("[!] Escalate blocked review note"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("[a] Arbitrary completed review task"))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Continuation line that explains the rationale with a link."))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Continuation should stay part of the task item"))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Continuation under child should align with child text."))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Loose continuation paragraph after a blank line with extra context."))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Loose task paragraph should still map to the task list item."))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Evidence screenshot"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("Embed: 180"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|180]]"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("Embed: 150"))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|150]]"))
+        XCTAssertEqual(attachmentCount(in: lists.renderModel.attributedText), 2)
+        let listAttachmentSizes = attachmentSizes(in: lists.renderModel.attributedText)
+        if listAttachmentSizes.count >= 2 {
+            XCTAssertEqual(listAttachmentSizes[0].width, 180, accuracy: 0.5)
+            XCTAssertEqual(listAttachmentSizes[1].width, 150, accuracy: 0.5)
+        } else {
+            XCTFail("Expected unordered-list and definition-list image previews")
+        }
+        XCTAssertTrue(lists.renderModel.attributedText.string.contains(
+            "• Evidence screenshot\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\nshould stay inside the list item."
+        ))
+        XCTAssertTrue(lists.renderModel.attributedText.string.contains(
+            "Screenshot\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\ndocuments the review surface."
+        ))
+        XCTAssertFalse(lists.renderModel.renderedPlainText.contains("../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: lists.renderModel.attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("3. Preserve the author's starting number."))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("10) Parenthesized ordered marker."))
         XCTAssertFalse(lists.renderModel.renderedPlainText.contains("10. Parenthesized ordered marker."))
@@ -307,9 +891,14 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertFalse(lists.renderModel.renderedPlainText.contains("\n  • Child item A.1"))
         XCTAssertTrue(hasLinkAttribute("https://example.com/list-continuation", in: lists.renderModel.attributedText))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Continuation line that explains the rationale", kind: .unorderedList, in: lists))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Done evidence should inherit the completed state", kind: .taskList, in: lists))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Continuation should stay part of the task item", kind: .taskList, in: lists))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Investigate annotation anchor drift", kind: .taskList, in: lists))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Escalate blocked review note", kind: .taskList, in: lists))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Arbitrary completed review task", kind: .taskList, in: lists))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Loose continuation paragraph after a blank line", kind: .unorderedList, in: lists))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Loose task paragraph should still map", kind: .taskList, in: lists))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Evidence screenshot", kind: .unorderedList, in: lists))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Parenthesized ordered marker", kind: .orderedList, in: lists))
         XCTAssertGreaterThan(
             firstLineIndent(for: "• Child item A.1", in: lists.renderModel.attributedText),
@@ -330,10 +919,13 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertTrue(lists.renderModel.sourceMap.blocks.contains { $0.kind == .definitionList })
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("API\nApplication Programming Interface"))
         XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Stable review contract with anchors"))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("Evidence artifact\nScreenshot"))
+        XCTAssertTrue(lists.renderModel.renderedPlainText.contains("documents the review surface."))
         XCTAssertFalse(lists.renderModel.renderedPlainText.contains(": Application Programming Interface"))
         XCTAssertTrue(hasBoldFont(for: "API", in: lists.renderModel.attributedText))
         XCTAssertTrue(hasBackgroundAttribute(for: "anchors", in: lists.renderModel.attributedText))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Application Programming Interface", kind: .definitionList, in: lists))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "documents the review surface", kind: .definitionList, in: lists))
 
         let tables = try XCTUnwrap(documents["03_tables_wide.md"])
         XCTAssertTrue(tables.renderModel.sourceMap.blocks.contains { $0.kind == .table })
@@ -347,12 +939,24 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertFalse(tables.renderModel.renderedPlainText.contains("`generation`"))
         XCTAssertFalse(tables.renderModel.renderedPlainText.contains(":warning:"))
         XCTAssertFalse(tables.renderModel.renderedPlainText.contains("Selection &amp; anchor"))
+        XCTAssertFalse(tables.renderModel.renderedPlainText.contains("Embed: 140"))
+        XCTAssertFalse(tables.renderModel.renderedPlainText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|140]]"))
         XCTAssertTrue(tables.renderModel.renderedPlainText.contains("⚠️"))
         XCTAssertTrue(tables.renderModel.renderedPlainText.contains("Selection & anchor mapping"))
         XCTAssertTrue(tables.renderModel.renderedPlainText.contains("最低显存"))
         XCTAssertTrue(tables.renderModel.renderedPlainText.contains("非商用免费/商用需授权"))
+        XCTAssertTrue(tables.renderModel.renderedPlainText.contains("Embed: markprompt_interaction_prototype_v4.png"))
+        XCTAssertTrue(tables.renderModel.renderedPlainText.contains("Ready for annotation"))
+        XCTAssertEqual(attachmentCount(in: tables.renderModel.attributedText), 1)
+        XCTAssertEqual(firstAttachmentSize(in: tables.renderModel.attributedText)?.width ?? 0, 140, accuracy: 0.5)
+        XCTAssertFalse(tables.renderModel.renderedPlainText.contains("../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: tables.renderModel.attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
         XCTAssertTrue(tableSelectionMapsBackToSource(text: "FLUX.2 [dev] (4bit)", in: tables))
         XCTAssertTrue(tableSelectionMapsBackToSource(text: "非商用免费/商用需授权", in: tables))
+        XCTAssertTrue(tableSelectionMapsBackToSource(text: "Embed: markprompt_interaction_prototype_v4.png", in: tables))
         XCTAssertTrue(hasBoldFont(for: "FLUX.2 [dev]", in: tables.renderModel.attributedText))
         XCTAssertTrue(hasLinkAttribute("https://www.apache.org/licenses/LICENSE-2.0", in: tables.renderModel.attributedText))
         XCTAssertTrue(hasBackgroundAttribute(for: "generation", in: tables.renderModel.attributedText))
@@ -409,32 +1013,91 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("┃"))
         XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!NOTE]"))
         XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!WARNING]"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!todo]+"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!faq]-"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!bug]"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!review]-"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("+ Ship review workflow"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("- Why keep source text?"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("- Needs reviewer follow-up"))
         XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("> Nested quote"))
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Lazy continuation should stay inside the quote block"))
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Second quoted paragraph keeps inline emphasis"))
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Nested quote should hide the extra marker"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Embedded evidence"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("▸ Nested reviewer hint"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Inner nested detail should keep indentation"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[!tip]-"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("Embed: 160"))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|160]]"))
+        XCTAssertEqual(attachmentCount(in: footnotes.renderModel.attributedText), 1)
+        XCTAssertEqual(firstAttachmentSize(in: footnotes.renderModel.attributedText)?.width ?? 0, 160, accuracy: 0.5)
+        XCTAssertTrue(footnotes.renderModel.attributedText.string.contains(
+            "Embedded evidence\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\nshould stay inside the quote block."
+        ))
+        XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: footnotes.renderModel.attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Note\nCallouts should hide"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("▸ Nested reviewer hint\nInner nested detail"))
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Warning\nRisky changes"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("▾ Ship review workflow\nFold markers"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("▸ Why keep source text?\nObsidian aliases"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("Bug\nRenderer regressions"))
+        XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("▸ Needs reviewer follow-up\nCustom callouts should fall back"))
         XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[^local-first]"))
         XCTAssertFalse(footnotes.renderModel.renderedPlainText.contains("[^anchor]"))
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("reference.¹"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "¹", in: footnotes.renderModel.attributedText) as? String,
+            "Local-first rendering means the Markdown content is processed on the user's device."
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "²", in: footnotes.renderModel.attributedText) as? String,
+            "Anchors need selected text, source context, and rendered ranges. Continuation lines should remain part of the same footnote when possible."
+        )
         XCTAssertTrue(footnotes.renderModel.renderedPlainText.contains("2. Anchors need"))
         XCTAssertTrue(containsFullWidthTextBlock(in: footnotes.renderModel.attributedText, for: "A good reader"))
         XCTAssertTrue(containsFullWidthTextBlock(in: footnotes.renderModel.attributedText, for: "Callouts should hide"))
+        XCTAssertTrue(containsFullWidthTextBlock(in: footnotes.renderModel.attributedText, for: "Ship review workflow"))
         XCTAssertTrue(hasBoldFont(for: "Note", in: footnotes.renderModel.attributedText))
         XCTAssertTrue(hasBoldFont(for: "Warning", in: footnotes.renderModel.attributedText))
+        XCTAssertTrue(hasBoldFont(for: "Bug", in: footnotes.renderModel.attributedText))
         XCTAssertTrue(hasDifferentForegroundColor(
             first: "Warning",
             second: "Risky changes",
             in: footnotes.renderModel.attributedText
         ))
+        XCTAssertTrue(hasDifferentForegroundColor(
+            first: "Ship review workflow",
+            second: "Fold markers",
+            in: footnotes.renderModel.attributedText
+        ))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "▾", in: footnotes.renderModel.attributedText) as? String,
+            "Default expanded in Obsidian"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "▸", in: footnotes.renderModel.attributedText) as? String,
+            "Default collapsed in Obsidian"
+        )
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Callouts should hide", kind: .blockquote, in: footnotes))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Nested reviewer hint", kind: .blockquote, in: footnotes))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Lazy continuation should stay", kind: .blockquote, in: footnotes))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Nested quote should hide", kind: .blockquote, in: footnotes))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Why keep source text?", kind: .blockquote, in: footnotes))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Needs reviewer follow-up", kind: .blockquote, in: footnotes))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Embedded evidence", kind: .blockquote, in: footnotes))
         XCTAssertTrue(hasBoldFont(for: "inline emphasis", in: footnotes.renderModel.attributedText))
         XCTAssertGreaterThan(
             firstLineIndent(for: "Nested quote should hide", in: footnotes.renderModel.attributedText),
             firstLineIndent(for: "Second quoted paragraph", in: footnotes.renderModel.attributedText)
+        )
+        XCTAssertGreaterThan(
+            firstLineIndent(for: "▸ Nested reviewer hint", in: footnotes.renderModel.attributedText),
+            firstLineIndent(for: "Callouts should hide", in: footnotes.renderModel.attributedText)
         )
         XCTAssertTrue(footnoteBlock(in: footnotes, contains: "Continuation lines should remain part of the same footnote"))
 
@@ -447,16 +1110,38 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertTrue(media.renderModel.renderedPlainText.contains("Collapsed reference: Local docs"))
         XCTAssertTrue(media.renderModel.renderedPlainText.contains("Inline image fallback: release badge Image: Build badge (https://example.com/badge.svg)"))
         XCTAssertTrue(media.renderModel.renderedPlainText.contains("reference icon Image: Reference badge (assets/icon.svg)."))
+        XCTAssertTrue(media.renderModel.renderedPlainText.contains("PDF: review-brief.pdf"))
+        XCTAssertTrue(media.renderModel.renderedPlainText.contains("Audio: interview.m4a"))
+        XCTAssertTrue(media.renderModel.renderedPlainText.contains("Video: prototype walkthrough"))
         XCTAssertTrue(media.renderModel.renderedPlainText.contains("Image: Reference local image"))
         XCTAssertFalse(media.renderModel.renderedPlainText.contains("[reader-ref]:"))
         XCTAssertFalse(media.renderModel.renderedPlainText.contains("[Markdown Reader reference][reader-ref]"))
         XCTAssertFalse(media.renderModel.renderedPlainText.contains("![Build badge]"))
         XCTAssertFalse(media.renderModel.renderedPlainText.contains("![Reference badge][inline-image-ref]"))
+        XCTAssertFalse(media.renderModel.renderedPlainText.contains("Embed: docs/assets/review-brief.pdf"))
+        XCTAssertFalse(media.renderModel.renderedPlainText.contains("Embed: captures/interview.m4a"))
+        XCTAssertFalse(media.renderModel.renderedPlainText.contains("Embed: prototype walkthrough"))
+        XCTAssertFalse(media.renderModel.renderedPlainText.contains("![[docs/assets/review-brief.pdf]]"))
+        XCTAssertFalse(media.renderModel.renderedPlainText.contains("docs/assets/review-brief.pdf"))
+        XCTAssertFalse(media.renderModel.renderedPlainText.contains("captures/interview.m4a"))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Image: Architecture overview", kind: .image, in: media))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Image: Reference local image", kind: .image, in: media))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Image: Build badge", kind: .paragraph, in: media))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "Image: Reference badge", kind: .paragraph, in: media))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "PDF: review-brief.pdf", kind: .paragraph, in: media))
         XCTAssertTrue(blockSelectionMapsBackToSource(text: "https://example.com/diagram.png", kind: .image, in: media))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "PDF: review-brief.pdf", in: media.renderModel.attributedText) as? String,
+            "docs/assets/review-brief.pdf"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Audio: interview.m4a", in: media.renderModel.attributedText) as? String,
+            "captures/interview.m4a"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Video: prototype walkthrough", in: media.renderModel.attributedText) as? String,
+            "demos/prototype.mov"
+        )
         XCTAssertTrue(hasLinkAttribute("https://md-reader.github.io/", in: media.renderModel.attributedText))
         XCTAssertTrue(hasLinkAttribute("https://example.com/local-docs", in: media.renderModel.attributedText))
         XCTAssertFalse(media.renderModel.renderedPlainText.contains("<https://example.com/autolink>"))
@@ -507,10 +1192,17 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertFalse(frontmatter.renderModel.renderedPlainText.hasPrefix("────────────"))
         XCTAssertFalse(frontmatter.renderModel.renderedPlainText.contains("────────────"))
         XCTAssertFalse(frontmatter.renderModel.renderedPlainText.contains("\ntags:\n"))
+        XCTAssertFalse(frontmatter.renderModel.renderedPlainText.contains("Metadata:"))
+        XCTAssertTrue(frontmatter.renderModel.renderedPlainText.hasPrefix("Properties\n"))
+        XCTAssertTrue(frontmatter.renderModel.renderedPlainText.contains("Title: Reader Fixture Frontmatter"))
+        XCTAssertTrue(frontmatter.renderModel.renderedPlainText.contains("Owner: MarkPrompt"))
+        XCTAssertTrue(frontmatter.renderModel.renderedPlainText.contains("Tags: markdown  reader"))
         XCTAssertTrue(frontmatter.renderModel.sourceMap.blocks.contains { $0.kind == .htmlBlock })
         XCTAssertTrue(frontmatter.renderModel.sourceMap.blocks.contains { $0.kind == .table })
         XCTAssertTrue(frontmatter.renderModel.sourceMap.blocks.contains { $0.kind == .thematicBreak })
-        XCTAssertTrue(containsFullWidthTextBlock(in: frontmatter.renderModel.attributedText, for: "Metadata:"))
+        XCTAssertTrue(containsFullWidthTextBlock(in: frontmatter.renderModel.attributedText, for: "Properties"))
+        XCTAssertTrue(hasBackgroundAttribute(for: "markdown", in: frontmatter.renderModel.attributedText))
+        XCTAssertTrue(hasBackgroundAttribute(for: "reader", in: frontmatter.renderModel.attributedText))
         XCTAssertTrue(containsFullWidthTextBlock(in: frontmatter.renderModel.attributedText, for: "HTML blocks should be visible"))
         XCTAssertTrue(containsNativeTextTable(in: frontmatter.renderModel.attributedText))
         XCTAssertFalse(frontmatter.renderModel.renderedPlainText.contains("<aside>"))
@@ -556,6 +1248,121 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertTrue(mixed.renderModel.sourceMap.blocks.contains { $0.kind == .table })
         XCTAssertTrue(mixed.renderModel.sourceMap.blocks.contains { $0.kind == .footnote })
         XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[^mix]"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("weekly review"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Prompt Quality"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Prompt Quality#Review checklist"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Decision Log#^accepted"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Markdown-format internal links should behave the same: review checklist, extensionless retro, and current block."))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("#review/anchor"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Embed: markprompt_interaction_prototype_v4.png"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Note: review appendix"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Note: Review Appendix#Risks"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Note: Review Appendix#Risk Map"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Embed: ../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Embed: review appendix"))
+        XCTAssertEqual(attachmentCount(in: mixed.renderModel.attributedText), 1)
+        let mixedEmbedPreviewSize = firstAttachmentSize(in: mixed.renderModel.attributedText)
+        XCTAssertEqual(mixedEmbedPreviewSize?.width ?? 0, 220, accuracy: 0.5)
+        XCTAssertGreaterThan(mixedEmbedPreviewSize?.height ?? 0, 0)
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Inline reviewer context² should stay compact."))
+        XCTAssertEqual(
+            attribute(.underlineStyle, for: "²", in: mixed.renderModel.attributedText) as? Int,
+            NSUnderlineStyle.single.union(.patternDot).rawValue
+        )
+        XCTAssertNotNil(attribute(.underlineColor, for: "²", in: mixed.renderModel.attributedText) as? NSColor)
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Reader Vault/Weekly Review|weekly review]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Prompt Quality]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Prompt Quality#Review checklist]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Decision Log#^accepted]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Prompt%20Quality.md#Review%20checklist"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Reader%20Vault/Weekly%20Review#Retro"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[current block](#^review-context)"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Research/Review Appendix#Findings|review appendix]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Note: Review Appendix.md#Risks"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Research/Review Appendix.md#Risks]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Review%20Appendix"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Risk%20Map"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("[[Research/Review%20Appendix.md#Risk%20Map]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Embed: 220"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|220]]"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("^[This should become a tooltip"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("%%needs a better example before sharing%%"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Reviewer-only TODO"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Hidden implementation concern"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("Private paragraph after blank line"))
+        XCTAssertTrue(mixed.renderModel.renderedPlainText.contains("Visible review note after the hidden scratchpad."))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("^review-context"))
+        XCTAssertFalse(mixed.renderModel.renderedPlainText.contains("^visible-review-note"))
+        XCTAssertEqual(
+            attribute(.link, for: "weekly review", in: mixed.renderModel.attributedText) as? String,
+            "obsidian://Reader%20Vault/Weekly%20Review"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "Prompt Quality#Review checklist", in: mixed.renderModel.attributedText) as? String,
+            "obsidian://Prompt%20Quality#Review%20checklist"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "Decision Log#^accepted", in: mixed.renderModel.attributedText) as? String,
+            "obsidian://Decision%20Log#^accepted"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "review checklist", in: mixed.renderModel.attributedText) as? String,
+            "obsidian://Prompt%20Quality#Review%20checklist"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "extensionless retro", in: mixed.renderModel.attributedText) as? String,
+            "obsidian://Reader%20Vault/Weekly%20Review#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "current block", in: mixed.renderModel.attributedText) as? String,
+            "obsidian://#^review-context"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "review checklist", in: mixed.renderModel.attributedText) as? String,
+            "Prompt Quality#Review checklist"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "extensionless retro", in: mixed.renderModel.attributedText) as? String,
+            "Reader Vault/Weekly Review#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "current block", in: mixed.renderModel.attributedText) as? String,
+            "#^review-context"
+        )
+        XCTAssertNotNil(attribute(.backgroundColor, for: "#review/anchor", in: mixed.renderModel.attributedText))
+        XCTAssertNotNil(attribute(.backgroundColor, for: "Embed: markprompt_interaction_prototype_v4.png", in: mixed.renderModel.attributedText))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: mixed.renderModel.attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: review appendix", in: mixed.renderModel.attributedText) as? String,
+            "Research/Review Appendix#Findings"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: Review Appendix#Risks", in: mixed.renderModel.attributedText) as? String,
+            "Research/Review Appendix.md#Risks"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: Review Appendix#Risk Map", in: mixed.renderModel.attributedText) as? String,
+            "Research/Review Appendix.md#Risk Map"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "²", in: mixed.renderModel.attributedText) as? String,
+            "This should become a tooltip without polluting selected text."
+        )
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "weekly review", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Prompt Quality#Review checklist", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Decision Log#^accepted", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "review checklist", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "extensionless retro", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "current block", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Embed: markprompt_interaction_prototype_v4.png", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Note: review appendix", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Note: Review Appendix#Risks", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Note: Review Appendix#Risk Map", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Inline reviewer context", kind: .paragraph, in: mixed))
+        XCTAssertTrue(blockSelectionMapsBackToSource(text: "Visible review note after the hidden scratchpad", kind: .paragraph, in: mixed))
     }
 
     private func layout(_ attributedText: NSAttributedString, width: CGFloat) throws {
@@ -711,6 +1518,18 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         return NSFontManager.shared.traits(of: font).contains(.boldFontMask)
     }
 
+    private func hasFixedPitchFont(for needle: String, in attributedText: NSAttributedString) -> Bool {
+        let rendered = attributedText.string as NSString
+        let match = rendered.range(of: needle)
+        guard match.location != NSNotFound,
+              let font = attributedText.attribute(.font, at: match.location, effectiveRange: nil) as? NSFont
+        else {
+            return false
+        }
+
+        return NSFontManager.shared.traits(of: font).contains(.fixedPitchFontMask)
+    }
+
     private func hasBackgroundAttribute(for needle: String, in attributedText: NSAttributedString) -> Bool {
         let rendered = attributedText.string as NSString
         let match = rendered.range(of: needle)
@@ -801,6 +1620,37 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         return count
     }
 
+    private func firstAttachmentSize(in attributedText: NSAttributedString) -> NSSize? {
+        var size: NSSize?
+        attributedText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributedText.length)
+        ) { value, _, stop in
+            guard let attachment = value as? NSTextAttachment else {
+                return
+            }
+
+            size = attachment.bounds.size
+            stop.pointee = true
+        }
+        return size
+    }
+
+    private func attachmentSizes(in attributedText: NSAttributedString) -> [NSSize] {
+        var sizes: [NSSize] = []
+        attributedText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributedText.length)
+        ) { value, _, _ in
+            guard let attachment = value as? NSTextAttachment else {
+                return
+            }
+
+            sizes.append(attachment.bounds.size)
+        }
+        return sizes
+    }
+
     private func allAttachmentsUseDynamicDrawing(in attributedText: NSAttributedString) -> Bool {
         var attachments: [NSTextAttachment] = []
         attributedText.enumerateAttribute(
@@ -884,6 +1734,21 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         return block.kind == kind && sourceRange.length > 0
     }
 
+    private func spaceKeyEvent(modifierFlags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifierFlags,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: " ",
+            charactersIgnoringModifiers: " ",
+            isARepeat: false,
+            keyCode: 49
+        )!
+    }
+
     private func parsedFixturesByName() throws -> [String: MarkdownDocument] {
         var documents: [String: MarkdownDocument] = [:]
         for url in try fixtureURLs() {
@@ -912,5 +1777,23 @@ final class ReaderFixtureRenderingTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("samples/markdown/reader-fixtures")
+    }
+}
+
+private final class UndoProbeResponder: NSResponder {
+    var undoCount = 0
+
+    @objc(undo:)
+    func undo(_ sender: Any?) {
+        undoCount += 1
+    }
+}
+
+private final class TaskMarkerCommandProbeResponder: NSResponder {
+    var toggleCount = 0
+
+    @objc(toggleTaskMarkerStatus:)
+    func toggleTaskMarkerStatus(_ sender: Any?) {
+        toggleCount += 1
     }
 }

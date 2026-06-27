@@ -1,25 +1,25 @@
 [
   {
     "appearance" : "dark",
-    "blockCount" : 20,
+    "blockCount" : 22,
     "blockKinds" : {
       "heading" : 9,
-      "paragraph" : 11
+      "paragraph" : 13
     },
     "file" : "01_headings_inline.md",
     "headingCount" : 9,
     "outputImage" : "01_headings_inline.png",
-    "renderedCharacters" : 1428,
-    "snapshotHeight" : 2240,
+    "renderedCharacters" : 1661,
+    "snapshotHeight" : 2440,
     "snapshotWidth" : 760,
-    "sourceCharacters" : 1745,
+    "sourceCharacters" : 1984,
     "title" : "Reader Fixture: Headings and Inline Styles"
   },
   {
     "appearance" : "dark",
-    "blockCount" : 14,
+    "blockCount" : 15,
     "blockKinds" : {
-      "definitionList" : 2,
+      "definitionList" : 3,
       "heading" : 7,
       "orderedList" : 3,
       "taskList" : 1,
@@ -28,26 +28,26 @@
     "file" : "02_lists_tasks.md",
     "headingCount" : 7,
     "outputImage" : "02_lists_tasks.png",
-    "renderedCharacters" : 1224,
-    "snapshotHeight" : 2098,
+    "renderedCharacters" : 1619,
+    "snapshotHeight" : 2723,
     "snapshotWidth" : 760,
-    "sourceCharacters" : 1339,
+    "sourceCharacters" : 1796,
     "title" : "Reader Fixture: Lists and Tasks"
   },
   {
     "appearance" : "dark",
-    "blockCount" : 7,
+    "blockCount" : 9,
     "blockKinds" : {
-      "heading" : 4,
-      "table" : 3
+      "heading" : 5,
+      "table" : 4
     },
     "file" : "03_tables_wide.md",
-    "headingCount" : 4,
+    "headingCount" : 5,
     "outputImage" : "03_tables_wide.png",
-    "renderedCharacters" : 1110,
-    "snapshotHeight" : 1373,
+    "renderedCharacters" : 1233,
+    "snapshotHeight" : 1755,
     "snapshotWidth" : 976,
-    "sourceCharacters" : 1511,
+    "sourceCharacters" : 1687,
     "title" : "Reader Fixture: Wide Tables"
   },
   {
@@ -68,9 +68,9 @@
   },
   {
     "appearance" : "dark",
-    "blockCount" : 8,
+    "blockCount" : 12,
     "blockKinds" : {
-      "blockquote" : 3,
+      "blockquote" : 7,
       "footnote" : 2,
       "heading" : 1,
       "paragraph" : 2
@@ -78,27 +78,27 @@
     "file" : "05_quotes_footnotes.md",
     "headingCount" : 1,
     "outputImage" : "05_quotes_footnotes.png",
-    "renderedCharacters" : 840,
-    "snapshotHeight" : 1138,
+    "renderedCharacters" : 1389,
+    "snapshotHeight" : 2029,
     "snapshotWidth" : 760,
-    "sourceCharacters" : 917,
+    "sourceCharacters" : 1544,
     "title" : "Reader Fixture: Quotes and Footnotes"
   },
   {
     "appearance" : "dark",
-    "blockCount" : 14,
+    "blockCount" : 16,
     "blockKinds" : {
-      "heading" : 5,
+      "heading" : 6,
       "image" : 3,
-      "paragraph" : 6
+      "paragraph" : 7
     },
     "file" : "06_images_links.md",
-    "headingCount" : 5,
+    "headingCount" : 6,
     "outputImage" : "06_images_links.png",
-    "renderedCharacters" : 681,
-    "snapshotHeight" : 2118,
+    "renderedCharacters" : 821,
+    "snapshotHeight" : 2346,
     "snapshotWidth" : 760,
-    "sourceCharacters" : 938,
+    "sourceCharacters" : 1118,
     "title" : "Reader Fixture: Images and Links"
   },
   {
@@ -150,30 +150,30 @@
     "headingCount" : 2,
     "outputImage" : "09_frontmatter_html.png",
     "renderedCharacters" : 801,
-    "snapshotHeight" : 1208,
+    "snapshotHeight" : 1301,
     "snapshotWidth" : 760,
     "sourceCharacters" : 1122,
     "title" : "Reader Fixture: Frontmatter and HTML"
   },
   {
     "appearance" : "dark",
-    "blockCount" : 12,
+    "blockCount" : 23,
     "blockKinds" : {
       "blockquote" : 1,
       "footnote" : 1,
-      "heading" : 5,
+      "heading" : 6,
       "orderedList" : 1,
-      "paragraph" : 2,
+      "paragraph" : 12,
       "table" : 1,
       "taskList" : 1
     },
     "file" : "10_review_prd_mix.md",
-    "headingCount" : 5,
+    "headingCount" : 6,
     "outputImage" : "10_review_prd_mix.png",
-    "renderedCharacters" : 852,
-    "snapshotHeight" : 1532,
+    "renderedCharacters" : 1707,
+    "snapshotHeight" : 2777,
     "snapshotWidth" : 760,
-    "sourceCharacters" : 981,
+    "sourceCharacters" : 2361,
     "title" : "Reader Fixture: Review PRD Mix"
   }
 ]

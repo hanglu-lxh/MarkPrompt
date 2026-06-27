@@ -8,6 +8,7 @@
   Another continuation with `inline code`.
 
   Loose continuation paragraph after a blank line with *extra context*.
+- Evidence screenshot ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|180]] should stay inside the list item.
 - Third product decision with `inline code`
 
 ## Ordered Lists
@@ -27,10 +28,15 @@
 ## Task Lists
 
 - [x] Confirm local-first behavior
+  Done evidence should inherit the completed state.
 - [ ] Review anchor recovery
   Continuation should stay part of the task item instead of becoming a loose paragraph.
 
   Loose task paragraph should still map to the task list item.
+- [-] Reject stale prompt draft
+- [/] Investigate annotation anchor drift
+- [!] Escalate blocked review note
+- [a] Arbitrary completed review task
 - [ ] Check Prompt preview warnings
 
 ## Nested Lists
@@ -51,3 +57,6 @@ API
 
 PromptBuilder
 : Builds a review prompt from included notes.
+
+Evidence artifact
+: Screenshot ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|150]] documents the review surface.

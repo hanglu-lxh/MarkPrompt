@@ -2,36 +2,176 @@ import AppKit
 import Foundation
 
 public struct MarkdownAttributedRenderer {
+    private static let taskMarkerMetadataPrefix = "\u{0014}task:"
+    private static let taskMarkerMetadataSuffix = "\u{0015}"
+    private static let completedTaskLooseContinuationPrefix = "\u{0018}"
+    private static let completedTaskContinuationPrefix = "\u{0019}"
     private static let listLooseContinuationPrefix = "\u{001C}"
     private static let listContinuationPrefix = "\u{001D}"
     private static let definitionTermPrefix = "\u{001E}"
     private static let definitionTextPrefix = "\u{001F}"
     private static let blockquoteNestingPrefix = "\u{001A}"
+    private static let inlineFootnoteIdentifierPrefix = "\u{001B}inline-footnote:"
+    private static let taskMarkerTooltip = "点击或按 Space/⌘L 切换完成/待办；⌘⌥J/K 跳转任务；右键可标记待办/完成/取消/进行中/重要。"
 
     private struct LinkReferenceDefinition {
         var destination: String
         var title: String?
     }
 
+    private struct ObsidianEmbedImageSize {
+        var width: CGFloat?
+        var height: CGFloat?
+    }
+
+    private enum ObsidianFileEmbedKind {
+        case pdf
+        case audio
+        case video
+
+        var label: String {
+            switch self {
+            case .pdf:
+                return "PDF"
+            case .audio:
+                return "Audio"
+            case .video:
+                return "Video"
+            }
+        }
+    }
+
+    private enum CalloutFoldState: String {
+        case expanded
+        case collapsed
+
+        init?(marker: String?) {
+            switch marker {
+            case "+":
+                self = .expanded
+            case "-":
+                self = .collapsed
+            default:
+                return nil
+            }
+        }
+
+        init?(disclosureGlyph: Character?) {
+            switch disclosureGlyph {
+            case "▾":
+                self = .expanded
+            case "▸":
+                self = .collapsed
+            default:
+                return nil
+            }
+        }
+
+        var disclosureGlyph: String {
+            switch self {
+            case .expanded:
+                return "▾"
+            case .collapsed:
+                return "▸"
+            }
+        }
+
+        var tooltip: String {
+            switch self {
+            case .expanded:
+                return "Default expanded in Obsidian"
+            case .collapsed:
+                return "Default collapsed in Obsidian"
+            }
+        }
+    }
+
     private enum CalloutKind: String {
+        case abstract
+        case bug
         case caution
+        case danger
+        case example
+        case failure
+        case info
         case important
         case note
+        case question
+        case quote
+        case success
         case tip
+        case todo
         case warning
 
         var title: String {
             switch self {
+            case .abstract:
+                return "Abstract"
+            case .bug:
+                return "Bug"
             case .caution:
                 return "Caution"
+            case .danger:
+                return "Danger"
+            case .example:
+                return "Example"
+            case .failure:
+                return "Failure"
+            case .info:
+                return "Info"
             case .important:
                 return "Important"
             case .note:
                 return "Note"
+            case .question:
+                return "Question"
+            case .quote:
+                return "Quote"
+            case .success:
+                return "Success"
             case .tip:
                 return "Tip"
+            case .todo:
+                return "Todo"
             case .warning:
                 return "Warning"
+            }
+        }
+
+        init?(calloutName: String) {
+            switch calloutName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "abstract", "summary", "tldr":
+                self = .abstract
+            case "bug":
+                self = .bug
+            case "caution":
+                self = .caution
+            case "danger", "error":
+                self = .danger
+            case "example":
+                self = .example
+            case "fail", "failure", "missing":
+                self = .failure
+            case "info":
+                self = .info
+            case "important":
+                self = .important
+            case "note":
+                self = .note
+            case "faq", "help", "question":
+                self = .question
+            case "cite", "quote":
+                self = .quote
+            case "check", "done", "success":
+                self = .success
+            case "hint", "tip":
+                self = .tip
+            case "todo":
+                self = .todo
+            case "attention", "warning":
+                self = .warning
+            default:
+                return nil
             }
         }
     }
@@ -50,6 +190,11 @@ public struct MarkdownAttributedRenderer {
         let footnoteOrdinals = footnoteReferenceOrdinals(in: lines)
         let abbreviations = abbreviationDefinitions(in: lines)
         let linkReferences = linkReferenceDefinitions(in: lines)
+        let footnoteDefinitions = footnoteDefinitionTooltips(
+            in: lines,
+            footnoteOrdinals: footnoteOrdinals,
+            linkReferences: linkReferences
+        )
         let headingBySourceStart = Dictionary(
             uniqueKeysWithValues: outline.flattened().map { ($0.sourceRange.lowerBound, $0) }
         )
@@ -75,6 +220,16 @@ public struct MarkdownAttributedRenderer {
 
             if trimmed.isEmpty {
                 index += 1
+                continue
+            }
+
+            if isStandaloneObsidianBlockID(trimmed) {
+                index += 1
+                continue
+            }
+
+            if let nextIndex = collectObsidianCommentBlock(from: lines, startingAt: index) {
+                index = nextIndex
                 continue
             }
 
@@ -145,8 +300,10 @@ public struct MarkdownAttributedRenderer {
                     headingID: heading.id,
                     attributes: headingAttributes(level: parsed.level),
                     footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     abbreviations: abbreviations,
                     linkReferences: linkReferences,
+                    baseURL: baseURL,
                     to: attributed,
                     blocks: &blocks,
                     headingRenderRanges: &headingRenderRanges
@@ -164,8 +321,10 @@ public struct MarkdownAttributedRenderer {
                     headingID: heading.id,
                     attributes: headingAttributes(level: parsed.level),
                     footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     abbreviations: abbreviations,
                     linkReferences: linkReferences,
+                    baseURL: baseURL,
                     to: attributed,
                     blocks: &blocks,
                     headingRenderRanges: &headingRenderRanges
@@ -253,9 +412,12 @@ public struct MarkdownAttributedRenderer {
                     sourceRange: result.sourceRange,
                     headingID: nil,
                     attributes: tableAttributes(),
+                    footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     tableColumnAlignments: result.alignments,
                     abbreviations: abbreviations,
                     linkReferences: linkReferences,
+                    baseURL: baseURL,
                     to: attributed,
                     blocks: &blocks,
                     headingRenderRanges: &headingRenderRanges
@@ -273,8 +435,10 @@ public struct MarkdownAttributedRenderer {
                     headingID: nil,
                     attributes: bodyAttributes(),
                     footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     abbreviations: abbreviations,
                     linkReferences: linkReferences,
+                    baseURL: baseURL,
                     to: attributed,
                     blocks: &blocks,
                     headingRenderRanges: &headingRenderRanges
@@ -292,8 +456,10 @@ public struct MarkdownAttributedRenderer {
                     headingID: nil,
                     attributes: bodyAttributes(),
                     footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     abbreviations: abbreviations,
                     linkReferences: linkReferences,
+                    baseURL: baseURL,
                     to: attributed,
                     blocks: &blocks,
                     headingRenderRanges: &headingRenderRanges
@@ -309,10 +475,15 @@ public struct MarkdownAttributedRenderer {
                     kind: .blockquote,
                     sourceRange: result.sourceRange,
                     headingID: nil,
-                    attributes: quoteAttributes(calloutKind: result.calloutKind),
+                    attributes: quoteAttributes(
+                        calloutKind: result.calloutKind,
+                        calloutFoldState: result.calloutFoldState
+                    ),
                     footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     abbreviations: abbreviations,
                     linkReferences: linkReferences,
+                    baseURL: baseURL,
                     to: attributed,
                     blocks: &blocks,
                     headingRenderRanges: &headingRenderRanges
@@ -344,8 +515,10 @@ public struct MarkdownAttributedRenderer {
                 headingID: nil,
                 attributes: bodyAttributes(),
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
                 linkReferences: linkReferences,
+                baseURL: baseURL,
                 to: attributed,
                 blocks: &blocks,
                 headingRenderRanges: &headingRenderRanges
@@ -371,10 +544,12 @@ public struct MarkdownAttributedRenderer {
         headingID: UUID?,
         attributes: [NSAttributedString.Key: Any],
         footnoteOrdinals: [String: Int] = [:],
+        footnoteDefinitions: [String: String] = [:],
         tableColumnAlignments: [NSTextAlignment]? = nil,
         localImageURL: URL? = nil,
         abbreviations: [String: String] = [:],
         linkReferences: [String: LinkReferenceDefinition] = [:],
+        baseURL: URL? = nil,
         to attributed: NSMutableAttributedString,
         blocks: inout [MarkdownRenderBlock],
         headingRenderRanges: inout [UUID: RenderedTextRange]
@@ -389,10 +564,12 @@ public struct MarkdownAttributedRenderer {
             kind: kind,
             attributes: attributes,
             footnoteOrdinals: footnoteOrdinals,
+            footnoteDefinitions: footnoteDefinitions,
             tableColumnAlignments: tableColumnAlignments,
             localImageURL: localImageURL,
             abbreviations: abbreviations,
-            linkReferences: linkReferences
+            linkReferences: linkReferences,
+            baseURL: baseURL
         ))
         let renderedRange = RenderedTextRange(location: start, length: attributed.length - start)
         attributed.append(NSAttributedString(string: "\n", attributes: bodyAttributes()))
@@ -680,7 +857,7 @@ public struct MarkdownAttributedRenderer {
                 }
 
                 if !key.isEmpty, !values.isEmpty {
-                    entries.append("\(key)=\(values.joined(separator: ", "))")
+                    entries.append("\(frontmatterDisplayKey(key)): \(values.joined(separator: "  "))")
                     index = valueIndex
                     continue
                 }
@@ -690,7 +867,7 @@ public struct MarkdownAttributedRenderer {
                 let key = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
                 let value = trimmed[trimmed.index(after: separator)...].trimmingCharacters(in: .whitespaces)
                 if !key.isEmpty, !value.isEmpty {
-                    entries.append("\(key)=\(value)")
+                    entries.append("\(frontmatterDisplayKey(String(key))): \(frontmatterDisplayValue(String(value)))")
                 }
             }
 
@@ -698,10 +875,42 @@ public struct MarkdownAttributedRenderer {
         }
 
         guard !entries.isEmpty else {
-            return "Metadata"
+            return "Properties"
         }
 
-        return "Metadata: \(entries.joined(separator: " · "))"
+        return "Properties\n\(entries.joined(separator: "\n"))"
+    }
+
+    private func frontmatterDisplayKey(_ key: String) -> String {
+        let words = key
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: CharacterSet(charactersIn: "-_ "))
+            .filter { !$0.isEmpty }
+            .map { word -> String in
+                let lowercased = word.lowercased()
+                guard let first = lowercased.first else {
+                    return ""
+                }
+                return first.uppercased() + lowercased.dropFirst()
+            }
+            .filter { !$0.isEmpty }
+
+        return words.isEmpty ? key : words.joined(separator: " ")
+    }
+
+    private func frontmatterDisplayValue(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else {
+            return trimmed
+        }
+
+        let first = trimmed.first
+        let last = trimmed.last
+        if first == last,
+           first == "\"" || first == "'" {
+            return String(trimmed.dropFirst().dropLast())
+        }
+        return trimmed
     }
 
     private func collectTable(
@@ -815,12 +1024,18 @@ public struct MarkdownAttributedRenderer {
             let indentation = String(repeating: "  ", count: item.indentLevel)
             let marker: String
             if item.isTask {
-                marker = item.isChecked ? "☑" : "☐"
+                marker = item.taskGlyph
             } else {
                 marker = item.isOrdered ? item.marker : "•"
             }
+            let isCompletedTask = item.isTask && marker == "☑"
+            let continuationPrefix = isCompletedTask ? Self.completedTaskContinuationPrefix : Self.listContinuationPrefix
+            let looseContinuationPrefix = isCompletedTask ? Self.completedTaskLooseContinuationPrefix : Self.listLooseContinuationPrefix
+            let taskMetadataPrefix = item.isTask
+                ? taskMarkerSourceMetadata(in: line).map(taskMarkerMetadataPrefix(for:)) ?? ""
+                : ""
 
-            renderedLines.append("\(indentation)\(marker) \(item.text)")
+            renderedLines.append("\(indentation)\(taskMetadataPrefix)\(marker) \(item.text)")
             lastLine = line
             index += 1
 
@@ -830,7 +1045,7 @@ public struct MarkdownAttributedRenderer {
                     at: index,
                     itemIndentLevel: item.indentLevel
                   ) {
-                renderedLines.append("\(indentation)\(Self.listContinuationPrefix)\(continuation)")
+                renderedLines.append("\(indentation)\(continuationPrefix)\(continuation)")
                 lastLine = lines[index]
                 index += 1
             }
@@ -842,7 +1057,7 @@ public struct MarkdownAttributedRenderer {
                     at: index + 1,
                     itemIndentLevel: item.indentLevel
                   ) {
-                renderedLines.append("\(indentation)\(Self.listLooseContinuationPrefix)\(continuation)")
+                renderedLines.append("\(indentation)\(looseContinuationPrefix)\(continuation)")
                 lastLine = lines[index + 1]
                 index += 2
 
@@ -852,7 +1067,7 @@ public struct MarkdownAttributedRenderer {
                         at: index,
                         itemIndentLevel: item.indentLevel
                       ) {
-                    renderedLines.append("\(indentation)\(Self.listContinuationPrefix)\(continuation)")
+                    renderedLines.append("\(indentation)\(continuationPrefix)\(continuation)")
                     lastLine = lines[index]
                     index += 1
                 }
@@ -870,11 +1085,18 @@ public struct MarkdownAttributedRenderer {
     private func collectBlockquote(
         from lines: [MarkdownSourceLine],
         startingAt startIndex: Int
-    ) -> (text: String, calloutKind: CalloutKind?, sourceRange: SourceTextRange, nextIndex: Int) {
+    ) -> (
+        text: String,
+        calloutKind: CalloutKind?,
+        calloutFoldState: CalloutFoldState?,
+        sourceRange: SourceTextRange,
+        nextIndex: Int
+    ) {
         var renderedLines: [String] = []
         var index = startIndex
         var lastLine = lines[startIndex]
         var calloutKind: CalloutKind?
+        var calloutFoldState: CalloutFoldState?
         var currentLevel = 1
 
         while index < lines.count {
@@ -901,9 +1123,14 @@ public struct MarkdownAttributedRenderer {
             if renderedLines.isEmpty,
                let callout = parseCalloutMarker(quoteText) {
                 calloutKind = callout.kind
-                let trailingText = callout.trailingText.trimmingCharacters(in: .whitespaces)
+                calloutFoldState = callout.foldState
                 renderedLines.append(blockquoteDisplayLine(
-                    trailingText.isEmpty ? callout.kind.title : "\(callout.kind.title): \(trailingText)",
+                    callout.title,
+                    level: quoteLevel
+                ))
+            } else if let nestedCallout = parseCalloutMarker(quoteText) {
+                renderedLines.append(blockquoteDisplayLine(
+                    nestedCalloutDisplayTitle(nestedCallout),
                     level: quoteLevel
                 ))
             } else {
@@ -916,9 +1143,19 @@ public struct MarkdownAttributedRenderer {
         return (
             renderedLines.joined(separator: "\n"),
             calloutKind,
+            calloutFoldState,
             SourceTextRange(lowerBound: lines[startIndex].sourceRange.lowerBound, upperBound: lastLine.sourceRange.upperBound),
             index
         )
+    }
+
+    private func nestedCalloutDisplayTitle(
+        _ callout: (kind: CalloutKind, title: String, foldState: CalloutFoldState?)
+    ) -> String {
+        guard let foldState = callout.foldState else {
+            return callout.title
+        }
+        return "\(foldState.disclosureGlyph) \(callout.title)"
     }
 
     private func parseBlockquoteLine(_ line: String) -> (level: Int, text: String)? {
@@ -969,6 +1206,7 @@ public struct MarkdownAttributedRenderer {
               parseFootnoteDefinition(trimmed) == nil,
               parseAbbreviationDefinition(trimmed) == nil,
               parseLinkReferenceDefinition(trimmed) == nil,
+              !isObsidianCommentBlockStart(trimmed),
               !isHTMLBlockStart(trimmed),
               parseListItem(line.text) == nil,
               trimmed != "$$",
@@ -981,9 +1219,9 @@ public struct MarkdownAttributedRenderer {
         return line.text.trimmingCharacters(in: .whitespaces)
     }
 
-    private func parseCalloutMarker(_ text: String) -> (kind: CalloutKind, trailingText: String)? {
+    private func parseCalloutMarker(_ text: String) -> (kind: CalloutKind, title: String, foldState: CalloutFoldState?)? {
         let nsText = text as NSString
-        let pattern = #"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$"#
+        let pattern = #"^\[!([A-Za-z][A-Za-z0-9_-]*)\]([+-])?\s*(.*)$"#
         guard let match = (try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]))?.firstMatch(
             in: text,
             range: NSRange(location: 0, length: nsText.length)
@@ -991,13 +1229,34 @@ public struct MarkdownAttributedRenderer {
             return nil
         }
 
-        let rawKind = nsText.substring(with: match.range(at: 1)).lowercased()
-        guard let kind = CalloutKind(rawValue: rawKind) else {
-            return nil
-        }
+        let rawKind = nsText.substring(with: match.range(at: 1))
+        let knownKind = CalloutKind(calloutName: rawKind)
+        let kind = knownKind ?? .note
+        let foldMarker = match.range(at: 2).location == NSNotFound ? nil : nsText.substring(with: match.range(at: 2))
+        let foldState = CalloutFoldState(marker: foldMarker)
 
-        let trailingText = match.range(at: 2).location == NSNotFound ? "" : nsText.substring(with: match.range(at: 2))
-        return (kind, trailingText)
+        let customTitle = match.range(at: 3).location == NSNotFound
+            ? ""
+            : nsText.substring(with: match.range(at: 3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultTitle = knownKind?.title ?? fallbackCalloutTitle(from: rawKind)
+        return (kind, customTitle.isEmpty ? defaultTitle : customTitle, foldState)
+    }
+
+    private func fallbackCalloutTitle(from rawKind: String) -> String {
+        let cleaned = rawKind.trimmingCharacters(in: .whitespacesAndNewlines)
+        let words = cleaned
+            .components(separatedBy: CharacterSet(charactersIn: "-_"))
+            .filter { !$0.isEmpty }
+            .map { word -> String in
+                let lowercased = word.lowercased()
+                guard let first = lowercased.first else {
+                    return ""
+                }
+                return first.uppercased() + lowercased.dropFirst()
+            }
+            .filter { !$0.isEmpty }
+
+        return words.isEmpty ? CalloutKind.note.title : words.joined(separator: " ")
     }
 
     private func collectParagraph(
@@ -1022,6 +1281,7 @@ public struct MarkdownAttributedRenderer {
                   parseFootnoteDefinition(trimmed) == nil,
                   parseAbbreviationDefinition(trimmed) == nil,
                   parseLinkReferenceDefinition(trimmed) == nil,
+                  !isObsidianCommentBlockStart(trimmed),
                   !isHTMLBlockStart(trimmed),
                   parseListItem(line.text) == nil,
                   !trimmed.hasPrefix(">"),
@@ -1042,6 +1302,44 @@ public struct MarkdownAttributedRenderer {
             SourceTextRange(lowerBound: lines[startIndex].sourceRange.lowerBound, upperBound: lastLine.sourceRange.upperBound),
             index
         )
+    }
+
+    private func collectObsidianCommentBlock(
+        from lines: [MarkdownSourceLine],
+        startingAt startIndex: Int
+    ) -> Int? {
+        let opening = lines[startIndex].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isObsidianCommentBlockStart(opening) else {
+            return nil
+        }
+
+        if let sameLineClosing = obsidianCommentClosingRange(in: opening, afterOpeningAt: opening.startIndex) {
+            let trailingText = opening[sameLineClosing.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return trailingText.isEmpty ? (startIndex + 1) : nil
+        }
+
+        var index = startIndex + 1
+        while index < lines.count {
+            let trimmed = lines[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: "%%") != nil {
+                return index + 1
+            }
+            index += 1
+        }
+
+        return (lines.count)
+    }
+
+    private func isObsidianCommentBlockStart(_ trimmedLine: String) -> Bool {
+        trimmedLine.hasPrefix("%%")
+    }
+
+    private func obsidianCommentClosingRange(
+        in trimmedLine: String,
+        afterOpeningAt openingIndex: String.Index
+    ) -> Range<String.Index>? {
+        let searchStart = trimmedLine.index(openingIndex, offsetBy: 2, limitedBy: trimmedLine.endIndex) ?? trimmedLine.endIndex
+        return trimmedLine.range(of: "%%", range: searchStart..<trimmedLine.endIndex)
     }
 
     private func paragraphLineDisplay(from line: String) -> (text: String, hasHardBreak: Bool) {
@@ -1072,7 +1370,7 @@ public struct MarkdownAttributedRenderer {
         return result
     }
 
-    private func parseListItem(_ line: String) -> (isOrdered: Bool, number: Int?, marker: String, isTask: Bool, isChecked: Bool, indentLevel: Int, text: String)? {
+    private func parseListItem(_ line: String) -> (isOrdered: Bool, number: Int?, marker: String, isTask: Bool, taskGlyph: String, indentLevel: Int, text: String)? {
         let indentWidth = leadingWhitespaceWidth(in: line)
         let indentLevel = min(4, indentWidth / 2)
         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -1080,10 +1378,10 @@ public struct MarkdownAttributedRenderer {
         if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
             let text = String(trimmed.dropFirst(2))
             if let task = parseTaskMarker(in: text) {
-                return (false, nil, "", true, task.isChecked, indentLevel, task.text)
+                return (false, nil, "", true, task.glyph, indentLevel, task.text)
             }
 
-            return (false, nil, "", false, false, indentLevel, text)
+            return (false, nil, "", false, "", indentLevel, text)
         }
 
         guard let match = trimmed.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) else {
@@ -1093,7 +1391,7 @@ public struct MarkdownAttributedRenderer {
         let marker = String(trimmed[match]).trimmingCharacters(in: .whitespaces)
         let number = Int(marker.dropLast())
         let text = String(trimmed[match.upperBound...])
-        return (true, number, marker, false, false, indentLevel, text)
+        return (true, number, marker, false, "", indentLevel, text)
     }
 
     private func listContinuationLine(
@@ -1116,6 +1414,7 @@ public struct MarkdownAttributedRenderer {
               parseFootnoteDefinition(trimmed) == nil,
               parseAbbreviationDefinition(trimmed) == nil,
               parseLinkReferenceDefinition(trimmed) == nil,
+              !isObsidianCommentBlockStart(trimmed),
               !isHTMLBlockStart(trimmed),
               !trimmed.hasPrefix(">"),
               trimmed != "$$",
@@ -1231,9 +1530,9 @@ public struct MarkdownAttributedRenderer {
             .lowercased()
     }
 
-    private func parseTaskMarker(in text: String) -> (isChecked: Bool, text: String)? {
+    private func parseTaskMarker(in text: String) -> (glyph: String, text: String)? {
         let nsText = text as NSString
-        let pattern = #"^\[( |x|X)\]\s+"#
+        let pattern = #"^\[([^\]\n])\]\s+"#
         guard let match = (try? NSRegularExpression(pattern: pattern))?.firstMatch(
             in: text,
             range: NSRange(location: 0, length: nsText.length)
@@ -1243,7 +1542,67 @@ public struct MarkdownAttributedRenderer {
 
         let marker = nsText.substring(with: match.range(at: 1))
         let taskText = nsText.substring(from: match.range.location + match.range.length)
-        return (marker.lowercased() == "x", taskText)
+        return (taskGlyph(for: marker), taskText)
+    }
+
+    private struct TaskMarkerSourceMetadata {
+        var sourceRange: SourceTextRange
+        var markerCharacter: String
+    }
+
+    private func taskMarkerSourceMetadata(in line: MarkdownSourceLine) -> TaskMarkerSourceMetadata? {
+        let nsLine = line.text as NSString
+        let pattern = #"^\s*[-*+]\s+(\[([^\]\n])\])\s+"#
+        guard let match = (try? NSRegularExpression(pattern: pattern))?.firstMatch(
+            in: line.text,
+            range: NSRange(location: 0, length: nsLine.length)
+        ) else {
+            return nil
+        }
+
+        let markerRange = match.range(at: 1)
+        let markerCharacterRange = match.range(at: 2)
+        guard markerRange.location != NSNotFound,
+              markerCharacterRange.location != NSNotFound
+        else {
+            return nil
+        }
+
+        return TaskMarkerSourceMetadata(
+            sourceRange: SourceTextRange(
+                lowerBound: line.sourceRange.lowerBound + markerRange.location,
+                upperBound: line.sourceRange.lowerBound + markerRange.location + markerRange.length
+            ),
+            markerCharacter: nsLine.substring(with: markerCharacterRange)
+        )
+    }
+
+    private func taskMarkerMetadataPrefix(for metadata: TaskMarkerSourceMetadata) -> String {
+        let scalarValue = metadata.markerCharacter.unicodeScalars.first?.value ?? 0
+        return "\(Self.taskMarkerMetadataPrefix)\(metadata.sourceRange.lowerBound):\(metadata.sourceRange.upperBound):\(scalarValue)\(Self.taskMarkerMetadataSuffix)"
+    }
+
+    private func taskGlyph(for marker: String) -> String {
+        switch marker {
+        case " ":
+            return "☐"
+        case "x", "X":
+            return "☑"
+        case "-":
+            return "☒"
+        case "/":
+            return "◩"
+        case "!":
+            return "⚠"
+        case "?":
+            return "?"
+        case "*":
+            return "★"
+        case ">":
+            return "›"
+        default:
+            return "☑"
+        }
     }
 
     private func isTableRow(_ trimmedLine: String) -> Bool {
@@ -1340,8 +1699,12 @@ public struct MarkdownAttributedRenderer {
         var cells: [String] = []
         var current = ""
         var isEscaped = false
+        var isInsideObsidianLink = false
 
-        for character in trimmed {
+        var index = trimmed.startIndex
+        while index < trimmed.endIndex {
+            let character = trimmed[index]
+
             if isEscaped {
                 if character == "|" {
                     current.append(character)
@@ -1350,20 +1713,44 @@ public struct MarkdownAttributedRenderer {
                     current.append(character)
                 }
                 isEscaped = false
+                index = trimmed.index(after: index)
                 continue
             }
 
             if character == "\\" {
                 isEscaped = true
+                index = trimmed.index(after: index)
                 continue
             }
 
-            if character == "|" {
+            let nextIndex = trimmed.index(after: index)
+            if character == "[",
+               nextIndex < trimmed.endIndex,
+               trimmed[nextIndex] == "[" {
+                isInsideObsidianLink = true
+                current.append("[[")
+                index = trimmed.index(after: nextIndex)
+                continue
+            }
+
+            if isInsideObsidianLink,
+               character == "]",
+               nextIndex < trimmed.endIndex,
+               trimmed[nextIndex] == "]" {
+                isInsideObsidianLink = false
+                current.append("]]")
+                index = trimmed.index(after: nextIndex)
+                continue
+            }
+
+            if character == "|", !isInsideObsidianLink {
                 cells.append(tableCellText(current))
                 current = ""
             } else {
                 current.append(character)
             }
+
+            index = trimmed.index(after: index)
         }
 
         if isEscaped {
@@ -1595,6 +1982,11 @@ public struct MarkdownAttributedRenderer {
             in: replaceFootnoteReferences(in: text, footnoteOrdinals: footnoteOrdinals),
             linkReferences: linkReferences
         )
+        stripped = replaceObsidianEmbeds(
+            in: replaceObsidianWikilinks(
+                in: replaceObsidianComments(in: replaceObsidianBlockID(in: stripped))
+            )
+        )
             .replacingOccurrences(of: inlineMathPattern(), with: "$1", options: .regularExpression)
             .replacingOccurrences(of: inlineMarkPattern(), with: "$1", options: .regularExpression)
             .replacingOccurrences(of: inlineInsertedPattern(), with: "$1", options: .regularExpression)
@@ -1605,13 +1997,13 @@ public struct MarkdownAttributedRenderer {
         stripped = replaceInlineMarkdownImages(in: stripped, linkReferences: linkReferences)
         stripped = stripped
             .replacingOccurrences(of: #"(?<!!)(?<!\\)\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
-            .replacingOccurrences(of: #"<(https?://[^>\s]+)>"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(?<!`)<(https?://[^>\s]+)>(?!`)"#, with: "$1", options: .regularExpression)
 
         stripped = replaceInlineHTMLImages(in: stripped)
         stripped = replaceInlineHTMLLinks(in: stripped)
         stripped = stripped
             .replacingOccurrences(of: #"<br\s*/?>"#, with: "\n", options: [.caseInsensitive, .regularExpression])
-            .replacingOccurrences(of: #"</?[A-Za-z][^>]*>"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?<!`)</?[A-Za-z][^>]*>(?!`)"#, with: "", options: .regularExpression)
             .decodingHTMLEntities()
             .replacingOccurrences(of: #"(?<!\\)`([^`\n]+)(?<!\\)`"#, with: "$1", options: .regularExpression)
             .replacingOccurrences(of: #"(?<!\\)~~(.+?)(?<!\\)~~"#, with: "$1", options: .regularExpression)
@@ -1625,6 +2017,210 @@ public struct MarkdownAttributedRenderer {
             .unescapingMarkdownBackslashEscapes()
 
         return stripped
+    }
+
+    private func replaceObsidianComments(in text: String) -> String {
+        text.replacingOccurrences(
+            of: #"(?s)\s*%%.*?%%\s*"#,
+            with: " ",
+            options: [.regularExpression]
+        )
+    }
+
+    private func replaceObsidianBlockID(in text: String) -> String {
+        text.replacingOccurrences(
+            of: #"\s+\^[A-Za-z0-9_-]+(?=\s*$)"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+
+    private func isStandaloneObsidianBlockID(_ trimmedLine: String) -> Bool {
+        trimmedLine.range(
+            of: #"^\^[A-Za-z0-9_-]+$"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private func replaceObsidianWikilinks(in text: String) -> String {
+        replaceObsidianLinkMatches(
+            in: text,
+            pattern: #"(?<!!)(?<!\\)\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]"#
+        ) { target, alias in
+            let cleanedAlias = alias?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleanedAlias?.isEmpty == false ? cleanedAlias! : obsidianDisplayTitle(from: target)
+        }
+    }
+
+    private func replaceObsidianEmbeds(in text: String) -> String {
+        replaceObsidianLinkMatches(
+            in: text,
+            pattern: #"(?<!\\)!\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]"#
+        ) { target, alias in
+            obsidianEmbedDisplayText(target: target, alias: alias)
+        }
+    }
+
+    private func obsidianEmbedDisplayText(target: String, alias: String?) -> String {
+        let kind = obsidianFileEmbedKind(for: target)
+        let display = obsidianEmbedDisplayName(target: target, alias: alias, kind: kind)
+        if let kind {
+            return display.isEmpty ? kind.label : "\(kind.label): \(display)"
+        }
+        if obsidianEmbedIsNoteReference(target) {
+            let noteDisplay = obsidianNoteEmbedDisplayName(target: target, alias: alias)
+            return noteDisplay.isEmpty ? "Note" : "Note: \(noteDisplay)"
+        }
+        return display.isEmpty ? "Embed" : "Embed: \(display)"
+    }
+
+    private func obsidianEmbedDisplayName(
+        target: String,
+        alias: String?,
+        kind: ObsidianFileEmbedKind? = nil
+    ) -> String {
+        let trimmedTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let cleanedAlias = alias?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !cleanedAlias.isEmpty
+        else {
+            guard kind != nil else {
+                return trimmedTarget
+            }
+            return obsidianEmbedFilename(from: trimmedTarget)
+        }
+
+        return obsidianEmbedImageSize(from: cleanedAlias) == nil ? cleanedAlias : trimmedTarget
+    }
+
+    private func obsidianFileEmbedKind(for target: String) -> ObsidianFileEmbedKind? {
+        switch obsidianEmbedFileExtension(from: target) {
+        case "pdf":
+            return .pdf
+        case "aac", "aif", "aiff", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav":
+            return .audio
+        case "avi", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ogv", "webm":
+            return .video
+        default:
+            return nil
+        }
+    }
+
+    private func obsidianEmbedFileExtension(from target: String) -> String {
+        (obsidianEmbedFilename(from: target) as NSString).pathExtension.lowercased()
+    }
+
+    private func obsidianEmbedIsNoteReference(_ target: String) -> Bool {
+        let fileExtension = obsidianEmbedFileExtension(from: target)
+        return fileExtension.isEmpty || fileExtension == "md"
+    }
+
+    private func obsidianNoteEmbedDisplayName(target: String, alias: String?) -> String {
+        if let cleanedAlias = alias?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cleanedAlias.isEmpty {
+            return cleanedAlias
+        }
+
+        let display = obsidianDisplayTitle(from: target)
+        guard display.lowercased().hasSuffix(".md") else {
+            return display
+        }
+        return String(display.dropLast(3))
+    }
+
+    private func obsidianEmbedFilename(from target: String) -> String {
+        let withoutAnchor = decodedObsidianTarget(from: target)
+            .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? target
+        let normalized = withoutAnchor
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "/")
+        return normalized.split(separator: "/").last.map(String.init) ?? normalized
+    }
+
+    private func obsidianEmbedImageSize(from alias: String?) -> ObsidianEmbedImageSize? {
+        guard let alias else {
+            return nil
+        }
+
+        let normalized = alias
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "×", with: "x")
+        guard !normalized.isEmpty else {
+            return nil
+        }
+
+        let parts = normalized.split(separator: "x", maxSplits: 1, omittingEmptySubsequences: false)
+        if parts.count == 1,
+           let width = obsidianEmbedDimension(String(parts[0])) {
+            return ObsidianEmbedImageSize(width: width, height: nil)
+        }
+
+        if parts.count == 2,
+           let width = obsidianEmbedDimension(String(parts[0])),
+           let height = obsidianEmbedDimension(String(parts[1])) {
+            return ObsidianEmbedImageSize(width: width, height: height)
+        }
+
+        return nil
+    }
+
+    private func obsidianEmbedDimension(_ rawValue: String) -> CGFloat? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed),
+              value.isFinite,
+              value > 0
+        else {
+            return nil
+        }
+
+        return CGFloat(min(value, 1_600))
+    }
+
+    private func replaceObsidianLinkMatches(
+        in text: String,
+        pattern: String,
+        replacement: (String, String?) -> String
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return text
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else {
+            return text
+        }
+
+        let mutable = NSMutableString(string: text)
+        for match in matches.reversed() {
+            let target = nsText.substring(with: match.range(at: 1))
+            let aliasRange = match.range(at: 2)
+            let alias = aliasRange.location == NSNotFound ? nil : nsText.substring(with: aliasRange)
+            mutable.replaceCharacters(in: match.range, with: replacement(target, alias))
+        }
+        return mutable as String
+    }
+
+    private func obsidianDisplayTitle(from target: String) -> String {
+        let cleaned = decodedObsidianTarget(from: target)
+        guard !cleaned.isEmpty else {
+            return cleaned
+        }
+
+        let parts = cleaned.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let notePath = parts.first.map(String.init) ?? cleaned
+        let anchor = parts.count > 1 ? "#\(parts[1])" : ""
+        let noteTitle = notePath.split(separator: "/").last.map(String.init) ?? notePath
+        let displayTitle = noteTitle.lowercased().hasSuffix(".md")
+            ? String(noteTitle.dropLast(3))
+            : noteTitle
+        return displayTitle.isEmpty ? anchor : "\(displayTitle)\(anchor)"
+    }
+
+    private func decodedObsidianTarget(from target: String) -> String {
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.removingPercentEncoding ?? trimmed
     }
 
     private func replaceInlineMarkdownImages(
@@ -1831,6 +2427,10 @@ public struct MarkdownAttributedRenderer {
         #"(?<![~\\])~([^~\s][^~\n]{0,40}?)(?<!\\)~(?!~)"#
     }
 
+    private func inlineFootnotePattern() -> String {
+        #"(?<!\\)\^\[([^\]\n]{1,280})\]"#
+    }
+
     private func emojiShortcodes() -> [String: String] {
         [
             "bug": "🐛",
@@ -1998,26 +2598,53 @@ public struct MarkdownAttributedRenderer {
             return true
         }
 
-        return line.hasPrefix("    ") || line.hasPrefix("\t")
+        let leadingSpaces = line.prefix { $0 == " " }.count
+        return leadingSpaces >= 2 || line.hasPrefix("\t")
     }
 
     private func footnoteReferenceOrdinals(in lines: [MarkdownSourceLine]) -> [String: Int] {
-        let pattern = #"\[\^([^\]]+)\]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        guard let referenceRegex = try? NSRegularExpression(pattern: #"\[\^([^\]]+)\]"#),
+              let inlineRegex = try? NSRegularExpression(pattern: inlineFootnotePattern())
+        else {
             return [:]
         }
 
         var ordinals: [String: Int] = [:]
+        var isInsideObsidianCommentBlock = false
         for line in lines {
             let trimmed = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isInsideObsidianCommentBlock {
+                if trimmed.range(of: "%%") != nil {
+                    isInsideObsidianCommentBlock = false
+                }
+                continue
+            }
+
+            if isObsidianCommentBlockStart(trimmed) {
+                if obsidianCommentClosingRange(in: trimmed, afterOpeningAt: trimmed.startIndex) == nil {
+                    isInsideObsidianCommentBlock = true
+                }
+                continue
+            }
+
             if parseFootnoteDefinition(trimmed) != nil {
                 continue
             }
 
             let nsLine = line.text as NSString
-            let matches = regex.matches(in: line.text, range: NSRange(location: 0, length: nsLine.length))
-            for match in matches {
-                let identifier = nsLine.substring(with: match.range(at: 1))
+            let referenceMatches = referenceRegex.matches(in: line.text, range: NSRange(location: 0, length: nsLine.length))
+                .map { match in (range: match.range, identifier: nsLine.substring(with: match.range(at: 1))) }
+            let inlineMatches = inlineRegex.matches(in: line.text, range: NSRange(location: 0, length: nsLine.length))
+                .compactMap { match -> (range: NSRange, identifier: String)? in
+                    let text = nsLine.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else {
+                        return nil
+                    }
+                    return (match.range, inlineFootnoteIdentifier(text: text))
+                }
+
+            for match in (referenceMatches + inlineMatches).sorted(by: { $0.range.location < $1.range.location }) {
+                let identifier = match.identifier
                 if ordinals[identifier] == nil {
                     ordinals[identifier] = ordinals.count + 1
                 }
@@ -2027,9 +2654,102 @@ public struct MarkdownAttributedRenderer {
         return ordinals
     }
 
+    private func footnoteDefinitionTooltips(
+        in lines: [MarkdownSourceLine],
+        footnoteOrdinals: [String: Int],
+        linkReferences: [String: LinkReferenceDefinition]
+    ) -> [String: String] {
+        var definitions: [String: String] = [:]
+        var index = 0
+        var isInsideObsidianCommentBlock = false
+
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isInsideObsidianCommentBlock {
+                if trimmed.range(of: "%%") != nil {
+                    isInsideObsidianCommentBlock = false
+                }
+                index += 1
+                continue
+            }
+
+            if isObsidianCommentBlockStart(trimmed) {
+                if obsidianCommentClosingRange(in: trimmed, afterOpeningAt: trimmed.startIndex) == nil {
+                    isInsideObsidianCommentBlock = true
+                }
+                index += 1
+                continue
+            }
+
+            guard let footnote = parseFootnoteDefinition(trimmed) else {
+                index += 1
+                continue
+            }
+
+            var parts: [String] = []
+            let firstLine = stripInlineMarkdown(
+                footnote.text,
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !firstLine.isEmpty {
+                parts.append(firstLine)
+            }
+
+            index += 1
+            while index < lines.count,
+                  isFootnoteContinuation(lines[index].text) {
+                let continuation = lines[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !continuation.isEmpty {
+                    let renderedContinuation = stripInlineMarkdown(
+                        continuation,
+                        footnoteOrdinals: footnoteOrdinals,
+                        linkReferences: linkReferences
+                    ).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !renderedContinuation.isEmpty {
+                        parts.append(renderedContinuation)
+                    }
+                }
+                index += 1
+            }
+
+            let tooltip = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tooltip.isEmpty {
+                definitions[footnote.identifier] = tooltip
+            }
+        }
+
+        return definitions
+    }
+
     private func replaceFootnoteReferences(in text: String, footnoteOrdinals: [String: Int]) -> String {
         let pattern = #"\[\^([^\]]+)\]"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return text
+        }
+
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        let replacedReferences: String
+        if matches.isEmpty {
+            replacedReferences = text
+        } else {
+            let mutable = NSMutableString(string: text)
+            for match in matches.reversed() {
+                let identifier = nsText.substring(with: match.range(at: 1))
+                mutable.replaceCharacters(
+                    in: match.range,
+                    with: footnoteReferenceLabel(identifier: identifier, footnoteOrdinals: footnoteOrdinals)
+                )
+            }
+            replacedReferences = mutable as String
+        }
+        return replaceInlineFootnotes(in: replacedReferences, footnoteOrdinals: footnoteOrdinals)
+    }
+
+    private func replaceInlineFootnotes(in text: String, footnoteOrdinals: [String: Int]) -> String {
+        guard let regex = try? NSRegularExpression(pattern: inlineFootnotePattern()) else {
             return text
         }
 
@@ -2041,10 +2761,10 @@ public struct MarkdownAttributedRenderer {
 
         let mutable = NSMutableString(string: text)
         for match in matches.reversed() {
-            let identifier = nsText.substring(with: match.range(at: 1))
+            let footnoteText = nsText.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
             mutable.replaceCharacters(
                 in: match.range,
-                with: footnoteReferenceLabel(identifier: identifier, footnoteOrdinals: footnoteOrdinals)
+                with: footnoteReferenceLabel(identifier: inlineFootnoteIdentifier(text: footnoteText), footnoteOrdinals: footnoteOrdinals)
             )
         }
         return mutable as String
@@ -2104,6 +2824,10 @@ public struct MarkdownAttributedRenderer {
         return "\(ordinal)."
     }
 
+    private func inlineFootnoteIdentifier(text: String) -> String {
+        Self.inlineFootnoteIdentifierPrefix + text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func superscriptNumber(_ number: Int) -> String {
         let digits: [Character: Character] = [
             "0": "⁰",
@@ -2125,10 +2849,12 @@ public struct MarkdownAttributedRenderer {
         kind: MarkdownRenderBlockKind,
         attributes: [NSAttributedString.Key: Any],
         footnoteOrdinals: [String: Int],
+        footnoteDefinitions: [String: String],
         tableColumnAlignments: [NSTextAlignment]? = nil,
         localImageURL: URL? = nil,
         abbreviations: [String: String] = [:],
-        linkReferences: [String: LinkReferenceDefinition] = [:]
+        linkReferences: [String: LinkReferenceDefinition] = [:],
+        baseURL: URL? = nil
     ) -> NSAttributedString {
         switch kind {
         case .codeBlock:
@@ -2138,8 +2864,11 @@ public struct MarkdownAttributedRenderer {
                 text: text,
                 attributes: attributes,
                 columnAlignments: tableColumnAlignments ?? [],
+                footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             )
         case .htmlBlock:
             return labeledFallbackBlockAttributedString(text: text, attributes: attributes, label: "HTML")
@@ -2147,47 +2876,59 @@ public struct MarkdownAttributedRenderer {
             return mathBlockAttributedString(text: text, attributes: attributes)
         case .image:
             return imageAttributedString(text: text, attributes: attributes, localImageURL: localImageURL)
-        case .footnote, .metadata, .thematicBreak:
+        case .footnote, .thematicBreak:
             return NSAttributedString(string: text, attributes: attributes)
+        case .metadata:
+            return metadataAttributedString(text: text, attributes: attributes)
         case .heading:
             return inlineStyledAttributedString(
                 markdown: text,
                 baseAttributes: attributes,
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             )
         case .unorderedList, .orderedList, .taskList:
             return listAttributedString(
                 text: text,
                 attributes: attributes,
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             )
         case .definitionList:
             return definitionListAttributedString(
                 text: text,
                 attributes: attributes,
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             )
         case .paragraph:
             return inlineStyledAttributedString(
                 markdown: text,
                 baseAttributes: attributes,
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             )
         case .blockquote:
             return blockquoteAttributedString(
                 markdown: text,
                 attributes: attributes,
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             )
         }
     }
@@ -2196,11 +2937,14 @@ public struct MarkdownAttributedRenderer {
         markdown: String,
         attributes: [NSAttributedString.Key: Any],
         footnoteOrdinals: [String: Int],
+        footnoteDefinitions: [String: String],
         abbreviations: [String: String],
-        linkReferences: [String: LinkReferenceDefinition]
+        linkReferences: [String: LinkReferenceDefinition],
+        baseURL: URL?
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let calloutKind = (attributes[.markPromptCalloutKind] as? String).flatMap(CalloutKind.init(rawValue:))
+        let calloutFoldState = (attributes[.markPromptCalloutFoldState] as? String).flatMap(CalloutFoldState.init(rawValue:))
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
         for lineIndex in lines.indices {
@@ -2214,16 +2958,44 @@ public struct MarkdownAttributedRenderer {
             )
 
             let lineAttributed = NSMutableAttributedString(attributedString: inlineStyledAttributedString(
-                markdown: displayLine,
-                baseAttributes: lineAttributes,
-                footnoteOrdinals: footnoteOrdinals,
-                abbreviations: abbreviations,
-                linkReferences: linkReferences
+                    markdown: displayLine,
+                    baseAttributes: lineAttributes,
+                    footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
+                    abbreviations: abbreviations,
+                    linkReferences: linkReferences,
+                    baseURL: baseURL
             ))
+
+            if lineIndex != lines.startIndex,
+               let nestedFoldState = CalloutFoldState(disclosureGlyph: lineAttributed.string.first) {
+                lineAttributed.addAttributes(
+                    [
+                        .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+                        .toolTip: nestedFoldState.tooltip
+                    ],
+                    range: NSRange(location: 0, length: min(1, lineAttributed.length))
+                )
+            }
 
             if lineIndex == lines.startIndex,
                let calloutKind,
                lineAttributed.length > 0 {
+                if let calloutFoldState {
+                    let disclosure = NSAttributedString(
+                        string: "\(calloutFoldState.disclosureGlyph) ",
+                        attributes: lineAttributes
+                    )
+                    lineAttributed.insert(disclosure, at: 0)
+                    lineAttributed.addAttributes(
+                        [
+                            .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+                            .foregroundColor: calloutColor(for: calloutKind),
+                            .toolTip: calloutFoldState.tooltip
+                        ],
+                        range: NSRange(location: 0, length: 1)
+                    )
+                }
                 let trimmedTitleLength = (lineAttributed.string as NSString)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .count
@@ -2247,6 +3019,103 @@ public struct MarkdownAttributedRenderer {
         return result
     }
 
+    private func metadataAttributedString(
+        text: String,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: attributes)
+        let nsText = text as NSString
+        guard nsText.length > 0 else {
+            return result
+        }
+
+        if text.hasPrefix("Properties") {
+            result.addAttributes(
+                [
+                    .font: NSFont.systemFont(ofSize: 13.5, weight: .semibold),
+                    .foregroundColor: NSColor.labelColor
+                ],
+                range: NSRange(location: 0, length: min("Properties".count, nsText.length))
+            )
+        }
+
+        var lineStart = 0
+        while lineStart < nsText.length {
+            var lineEnd = lineStart
+            while lineEnd < nsText.length,
+                  !isLineBreak(nsText.character(at: lineEnd)) {
+                lineEnd += 1
+            }
+
+            let lineRange = NSRange(location: lineStart, length: lineEnd - lineStart)
+            let line = nsText.substring(with: lineRange)
+            if let separator = line.firstIndex(of: ":") {
+                let keyLength = line.distance(from: line.startIndex, to: separator) + 1
+                result.addAttributes(
+                    [
+                        .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                        .foregroundColor: NSColor.labelColor
+                    ],
+                    range: NSRange(location: lineStart, length: keyLength)
+                )
+
+                let key = String(line[..<separator])
+                if key.caseInsensitiveCompare("Tags") == .orderedSame {
+                    let valueStart = lineStart + keyLength
+                    let valueLength = max(0, lineRange.upperBound - valueStart)
+                    applyMetadataTagTokenStyle(
+                        to: result,
+                        in: NSRange(location: valueStart, length: valueLength)
+                    )
+                }
+            }
+
+            lineStart = lineEnd + 1
+        }
+
+        return result
+    }
+
+    private func applyMetadataTagTokenStyle(
+        to attributed: NSMutableAttributedString,
+        in range: NSRange
+    ) {
+        let nsText = attributed.string as NSString
+        guard range.location < nsText.length,
+              range.length > 0
+        else {
+            return
+        }
+
+        var tokenStart: Int?
+        var location = range.location
+        let upperBound = min(range.upperBound, nsText.length)
+        while location <= upperBound {
+            let isEnd = location == upperBound
+            let character = isEnd ? 32 : nsText.character(at: location)
+            let isSeparator = isEnd || isHorizontalWhitespace(character) || isLineBreak(character)
+
+            if isSeparator {
+                if let start = tokenStart,
+                   location > start {
+                    attributed.addAttributes(
+                        [
+                            .font: NSFont.systemFont(ofSize: 12.8, weight: .medium),
+                            .foregroundColor: NSColor.systemPurple,
+                            .backgroundColor: obsidianTokenBackgroundColor()
+                        ],
+                        range: NSRange(location: start, length: location - start)
+                    )
+                }
+                tokenStart = nil
+            } else if tokenStart == nil {
+                tokenStart = location
+            }
+
+            location += 1
+        }
+    }
+
     private func blockquoteNestingLevel(in line: String) -> Int {
         guard let prefix = Self.blockquoteNestingPrefix.first else {
             return 0
@@ -2265,8 +3134,10 @@ public struct MarkdownAttributedRenderer {
         text: String,
         attributes: [NSAttributedString.Key: Any],
         footnoteOrdinals: [String: Int],
+        footnoteDefinitions: [String: String],
         abbreviations: [String: String],
-        linkReferences: [String: LinkReferenceDefinition]
+        linkReferences: [String: LinkReferenceDefinition],
+        baseURL: URL?
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -2275,20 +3146,29 @@ public struct MarkdownAttributedRenderer {
             let rawLine = lines[lineIndex]
             let indentLevel = renderedListIndentLevel(rawLine)
             let trimmedLine = rawLine.trimmingCharacters(in: .whitespaces)
-            let isLooseContinuation = trimmedLine.hasPrefix(Self.listLooseContinuationPrefix)
-            let isContinuation = isLooseContinuation || trimmedLine.hasPrefix(Self.listContinuationPrefix)
-            let displayLine = isContinuation
-                ? String(trimmedLine.dropFirst(isLooseContinuation
-                    ? Self.listLooseContinuationPrefix.count
-                    : Self.listContinuationPrefix.count))
-                : trimmedLine
+            let taskMarkerMetadata = taskMarkerMetadata(in: trimmedLine)
+            let lineWithoutTaskMetadata = if let taskMarkerMetadata {
+                String(trimmedLine.dropFirst(taskMarkerMetadata.prefixLength))
+            } else {
+                trimmedLine
+            }
+            let continuationKind = listContinuationKind(in: lineWithoutTaskMetadata)
+            let isContinuation = continuationKind != nil
+            let isLooseContinuation = continuationKind?.isLoose == true
+            let displayLine = if let continuationKind {
+                String(lineWithoutTaskMetadata.dropFirst(continuationKind.prefix.count))
+            } else {
+                lineWithoutTaskMetadata
+            }
             let lineAttributed = NSMutableAttributedString(
                 attributedString: inlineStyledAttributedString(
                     markdown: displayLine,
                     baseAttributes: attributes,
                     footnoteOrdinals: footnoteOrdinals,
+                    footnoteDefinitions: footnoteDefinitions,
                     abbreviations: abbreviations,
-                    linkReferences: linkReferences
+                    linkReferences: linkReferences,
+                    baseURL: baseURL
                 )
             )
             let paragraphRange = NSRange(location: 0, length: lineAttributed.length)
@@ -2312,6 +3192,38 @@ public struct MarkdownAttributedRenderer {
                     ],
                     range: markerRange
                 )
+                if let taskMarkerMetadata {
+                    var taskMarkerAttributes: [NSAttributedString.Key: Any] = [
+                        .markPromptTaskMarkerSourceRange: taskMarkerMetadata.sourceRange,
+                        .toolTip: Self.taskMarkerTooltip
+                    ]
+                    if let markerCharacter = taskMarkerMetadata.markerCharacter {
+                        taskMarkerAttributes[.markPromptTaskMarkerCharacter] = markerCharacter
+                    }
+                    lineAttributed.addAttributes(
+                        taskMarkerAttributes,
+                        range: markerRange
+                    )
+                }
+
+                if let completedTaskTextRange = completedTaskTextRange(in: displayLine, markerRange: markerRange) {
+                    lineAttributed.addAttributes(
+                        [
+                            .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                            .strikethroughColor: NSColor.secondaryLabelColor
+                        ],
+                        range: completedTaskTextRange
+                    )
+                }
+            } else if continuationKind?.inheritsCompletedTaskStyle == true,
+                      lineAttributed.length > 0 {
+                lineAttributed.addAttributes(
+                    [
+                        .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                        .strikethroughColor: NSColor.secondaryLabelColor
+                    ],
+                    range: NSRange(location: 0, length: lineAttributed.length)
+                )
             }
 
             result.append(lineAttributed)
@@ -2323,12 +3235,72 @@ public struct MarkdownAttributedRenderer {
         return result
     }
 
+    private func taskMarkerMetadata(in line: String) -> (sourceRange: SourceTextRange, markerCharacter: String?, prefixLength: Int)? {
+        guard line.hasPrefix(Self.taskMarkerMetadataPrefix) else {
+            return nil
+        }
+
+        let nsLine = line as NSString
+        let suffixRange = nsLine.range(of: Self.taskMarkerMetadataSuffix)
+        let payloadStart = (Self.taskMarkerMetadataPrefix as NSString).length
+        guard suffixRange.location != NSNotFound,
+              suffixRange.location > payloadStart
+        else {
+            return nil
+        }
+
+        let payload = nsLine.substring(
+            with: NSRange(location: payloadStart, length: suffixRange.location - payloadStart)
+        )
+        let payloadParts = payload.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        let bounds = payloadParts.prefix(2).compactMap { Int($0) }
+        guard bounds.count == 2 else {
+            return nil
+        }
+        let markerCharacter = markerCharacter(fromEncodedPayloadPart: payloadParts.dropFirst(2).first)
+
+        return (
+            SourceTextRange(lowerBound: bounds[0], upperBound: bounds[1]),
+            markerCharacter,
+            suffixRange.location + suffixRange.length
+        )
+    }
+
+    private func markerCharacter(fromEncodedPayloadPart payloadPart: Substring?) -> String? {
+        guard let payloadPart,
+              let scalarValue = UInt32(payloadPart),
+              let scalar = UnicodeScalar(scalarValue)
+        else {
+            return nil
+        }
+
+        return String(Character(scalar))
+    }
+
+    private func listContinuationKind(in line: String) -> (prefix: String, isLoose: Bool, inheritsCompletedTaskStyle: Bool)? {
+        if line.hasPrefix(Self.completedTaskLooseContinuationPrefix) {
+            return (Self.completedTaskLooseContinuationPrefix, true, true)
+        }
+        if line.hasPrefix(Self.completedTaskContinuationPrefix) {
+            return (Self.completedTaskContinuationPrefix, false, true)
+        }
+        if line.hasPrefix(Self.listLooseContinuationPrefix) {
+            return (Self.listLooseContinuationPrefix, true, false)
+        }
+        if line.hasPrefix(Self.listContinuationPrefix) {
+            return (Self.listContinuationPrefix, false, false)
+        }
+        return nil
+    }
+
     private func definitionListAttributedString(
         text: String,
         attributes: [NSAttributedString.Key: Any],
         footnoteOrdinals: [String: Int],
+        footnoteDefinitions: [String: String],
         abbreviations: [String: String],
-        linkReferences: [String: LinkReferenceDefinition]
+        linkReferences: [String: LinkReferenceDefinition],
+        baseURL: URL?
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -2351,8 +3323,10 @@ public struct MarkdownAttributedRenderer {
                 markdown: markdown,
                 baseAttributes: lineAttributes,
                 footnoteOrdinals: footnoteOrdinals,
+                footnoteDefinitions: footnoteDefinitions,
                 abbreviations: abbreviations,
-                linkReferences: linkReferences
+                linkReferences: linkReferences,
+                baseURL: baseURL
             ))
             if lineIndex < lines.index(before: lines.endIndex) {
                 result.append(NSAttributedString(string: "\n", attributes: lineAttributes))
@@ -2369,7 +3343,7 @@ public struct MarkdownAttributedRenderer {
 
     private func listMarkerRange(in line: String) -> NSRange? {
         let nsLine = line as NSString
-        let pattern = #"^(☑|☐|•|\d+[.)])"#
+        let pattern = #"^(☑|☐|☒|◩|⚠|\?|★|›|•|\d+[.)])"#
         return (try? NSRegularExpression(pattern: pattern))?
             .firstMatch(in: line, range: NSRange(location: 0, length: nsLine.length))?
             .range(at: 1)
@@ -2379,15 +3353,42 @@ public struct MarkdownAttributedRenderer {
         if line.hasPrefix("☑") {
             return NSColor.systemBlue
         }
+        if line.hasPrefix("☒") || line.hasPrefix("⚠") {
+            return NSColor.systemOrange
+        }
+        if line.hasPrefix("◩") {
+            return NSColor.systemPurple
+        }
         return NSColor.secondaryLabelColor
+    }
+
+    private func completedTaskTextRange(in line: String, markerRange: NSRange) -> NSRange? {
+        guard line.hasPrefix("☑") else {
+            return nil
+        }
+
+        let nsLine = line as NSString
+        var location = markerRange.upperBound
+        if location < nsLine.length,
+           CharacterSet.whitespaces.contains(UnicodeScalar(nsLine.character(at: location)) ?? UnicodeScalar(32)) {
+            location += 1
+        }
+        guard location < nsLine.length else {
+            return nil
+        }
+
+        return NSRange(location: location, length: nsLine.length - location)
     }
 
     private func tableAttributedString(
         text: String,
         attributes: [NSAttributedString.Key: Any],
         columnAlignments: [NSTextAlignment],
+        footnoteOrdinals: [String: Int],
+        footnoteDefinitions: [String: String],
         abbreviations: [String: String],
-        linkReferences: [String: LinkReferenceDefinition]
+        linkReferences: [String: LinkReferenceDefinition],
+        baseURL: URL?
     ) -> NSAttributedString {
         let markdownRows = text
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -2467,8 +3468,11 @@ public struct MarkdownAttributedRenderer {
                     result.append(inlineStyledAttributedString(
                         markdown: value,
                         baseAttributes: cellAttributes,
+                        footnoteOrdinals: footnoteOrdinals,
+                        footnoteDefinitions: footnoteDefinitions,
                         abbreviations: abbreviations,
-                        linkReferences: linkReferences
+                        linkReferences: linkReferences,
+                        baseURL: baseURL
                     ))
                     result.append(NSAttributedString(string: "\n", attributes: cellAttributes))
                 }
@@ -2997,7 +4001,10 @@ public struct MarkdownAttributedRenderer {
         return result
     }
 
-    private func thumbnailImage(from image: NSImage) -> NSImage? {
+    private func thumbnailImage(
+        from image: NSImage,
+        preferredSize: ObsidianEmbedImageSize? = nil
+    ) -> NSImage? {
         let sourceSize = usableImageSize(for: image)
         guard sourceSize.width > 0,
               sourceSize.height > 0
@@ -3005,8 +4012,20 @@ public struct MarkdownAttributedRenderer {
             return nil
         }
 
-        let maxSize = NSSize(width: 520, height: 260)
-        let scale = min(1, maxSize.width / sourceSize.width, maxSize.height / sourceSize.height)
+        let scale: CGFloat
+        if let preferredSize {
+            let widthScale = preferredSize.width.map { $0 / sourceSize.width }
+            let heightScale = preferredSize.height.map { $0 / sourceSize.height }
+            scale = [
+                widthScale,
+                heightScale
+            ]
+            .compactMap { $0 }
+            .min() ?? 1
+        } else {
+            let maxSize = NSSize(width: 520, height: 260)
+            scale = min(1, maxSize.width / sourceSize.width, maxSize.height / sourceSize.height)
+        }
         let targetSize = NSSize(
             width: max(1, floor(sourceSize.width * scale)),
             height: max(1, floor(sourceSize.height * scale))
@@ -3174,8 +4193,10 @@ public struct MarkdownAttributedRenderer {
         markdown: String,
         baseAttributes: [NSAttributedString.Key: Any],
         footnoteOrdinals: [String: Int] = [:],
+        footnoteDefinitions: [String: String] = [:],
         abbreviations: [String: String] = [:],
-        linkReferences: [String: LinkReferenceDefinition] = [:]
+        linkReferences: [String: LinkReferenceDefinition] = [:],
+        baseURL: URL? = nil
     ) -> NSAttributedString {
         let displayText = stripInlineMarkdown(
             markdown,
@@ -3191,7 +4212,8 @@ public struct MarkdownAttributedRenderer {
             displayText: displayText,
             footnoteOrdinals: footnoteOrdinals,
             linkReferences: linkReferences,
-            to: attributed
+            to: attributed,
+            preserveInnerMarkdown: true
         ) { innerText in
             [
                 .font: NSFont.monospacedSystemFont(ofSize: max(12, baseFont.pointSize - 1), weight: .regular),
@@ -3426,6 +4448,14 @@ public struct MarkdownAttributedRenderer {
             markdown: markdown,
             displayText: displayText,
             footnoteOrdinals: footnoteOrdinals,
+            footnoteDefinitions: footnoteDefinitions,
+            to: attributed
+        )
+        applyInlineFootnoteReferenceStyle(
+            markdown: markdown,
+            displayText: displayText,
+            footnoteOrdinals: footnoteOrdinals,
+            linkReferences: linkReferences,
             to: attributed
         )
         applyAbbreviationStyle(abbreviations: abbreviations, displayText: displayText, to: attributed)
@@ -3451,7 +4481,31 @@ public struct MarkdownAttributedRenderer {
             linkReferences: linkReferences,
             to: attributed
         )
+        applyObsidianWikilinkStyle(
+            markdown: markdown,
+            displayText: displayText,
+            footnoteOrdinals: footnoteOrdinals,
+            linkReferences: linkReferences,
+            to: attributed
+        )
+        applyObsidianEmbedStyle(
+            markdown: markdown,
+            displayText: displayText,
+            footnoteOrdinals: footnoteOrdinals,
+            linkReferences: linkReferences,
+            to: attributed
+        )
         applyBareURLStyle(displayText: displayText, to: attributed)
+        applyObsidianTagStyle(displayText: displayText, to: attributed)
+        insertObsidianEmbedPreviews(
+            markdown: markdown,
+            displayText: displayText,
+            footnoteOrdinals: footnoteOrdinals,
+            linkReferences: linkReferences,
+            baseURL: baseURL,
+            attributes: baseAttributes,
+            into: attributed
+        )
         return attributed
     }
 
@@ -3479,6 +4533,9 @@ public struct MarkdownAttributedRenderer {
             ) ?? []
 
             for match in matches {
+                guard !hasFixedPitchFont(in: attributed, at: match.range.location) else {
+                    continue
+                }
                 attributed.addAttributes(
                     [
                         .toolTip: definition,
@@ -3549,6 +4606,7 @@ public struct MarkdownAttributedRenderer {
         linkReferences: [String: LinkReferenceDefinition] = [:],
         to attributed: NSMutableAttributedString,
         options: NSRegularExpression.Options = [],
+        preserveInnerMarkdown: Bool = false,
         attributes: (String) -> [NSAttributedString.Key: Any]
     ) {
         let nsMarkdown = markdown as NSString
@@ -3570,11 +4628,13 @@ public struct MarkdownAttributedRenderer {
             }
 
             let innerText = nsMarkdown.substring(with: captureRange)
-            let displayInnerText = stripInlineMarkdown(
-                innerText,
-                footnoteOrdinals: footnoteOrdinals,
-                linkReferences: linkReferences
-            )
+            let displayInnerText = preserveInnerMarkdown
+                ? innerText
+                : stripInlineMarkdown(
+                    innerText,
+                    footnoteOrdinals: footnoteOrdinals,
+                    linkReferences: linkReferences
+                )
             let displayLocation = (stripInlineMarkdown(
                 nsMarkdown.substring(to: match.range.location),
                 footnoteOrdinals: footnoteOrdinals,
@@ -3783,7 +4843,386 @@ public struct MarkdownAttributedRenderer {
         }
     }
 
+    private func applyObsidianWikilinkStyle(
+        markdown: String,
+        displayText: String,
+        footnoteOrdinals: [String: Int],
+        linkReferences: [String: LinkReferenceDefinition],
+        to attributed: NSMutableAttributedString
+    ) {
+        let pattern = #"(?<!!)(?<!\\)\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]"#
+        let nsMarkdown = markdown as NSString
+        let matches = (try? NSRegularExpression(pattern: pattern))?.matches(
+            in: markdown,
+            range: NSRange(location: 0, length: nsMarkdown.length)
+        ) ?? []
+        let nsDisplay = displayText as NSString
+        var searchLocation = 0
+
+        for match in matches {
+            let targetRange = match.range(at: 1)
+            guard targetRange.location != NSNotFound else {
+                continue
+            }
+
+            let target = nsMarkdown.substring(with: targetRange)
+            let aliasRange = match.range(at: 2)
+            let rawLabel = aliasRange.location == NSNotFound ? obsidianDisplayTitle(from: target) : nsMarkdown.substring(with: aliasRange)
+            let displayLabel = stripInlineMarkdown(
+                rawLabel,
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            )
+            let displayLocation = (stripInlineMarkdown(
+                nsMarkdown.substring(to: match.range.location),
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            ) as NSString).length
+            let displayRange = NSRange(location: displayLocation, length: (displayLabel as NSString).length)
+
+            guard displayRange.location >= searchLocation,
+                  displayRange.upperBound <= nsDisplay.length
+            else {
+                continue
+            }
+
+            attributed.addAttributes(obsidianLinkAttributes(target: target), range: displayRange)
+            searchLocation = displayRange.upperBound
+        }
+    }
+
+    private func applyObsidianEmbedStyle(
+        markdown: String,
+        displayText: String,
+        footnoteOrdinals: [String: Int],
+        linkReferences: [String: LinkReferenceDefinition],
+        to attributed: NSMutableAttributedString
+    ) {
+        let pattern = #"(?<!\\)!\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]"#
+        let nsMarkdown = markdown as NSString
+        let matches = (try? NSRegularExpression(pattern: pattern))?.matches(
+            in: markdown,
+            range: NSRange(location: 0, length: nsMarkdown.length)
+        ) ?? []
+        let nsDisplay = displayText as NSString
+        var searchLocation = 0
+
+        for match in matches {
+            let targetRange = match.range(at: 1)
+            guard targetRange.location != NSNotFound else {
+                continue
+            }
+
+            let target = nsMarkdown.substring(with: targetRange)
+            let displayPlaceholder = stripInlineMarkdown(
+                nsMarkdown.substring(with: match.range),
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            )
+            let displayLocation = (stripInlineMarkdown(
+                nsMarkdown.substring(to: match.range.location),
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            ) as NSString).length
+            let displayRange = NSRange(location: displayLocation, length: (displayPlaceholder as NSString).length)
+
+            guard displayRange.location >= searchLocation,
+                  displayRange.upperBound <= nsDisplay.length
+            else {
+                continue
+            }
+
+            attributed.addAttributes(obsidianEmbedAttributes(target: target), range: displayRange)
+            searchLocation = displayRange.upperBound
+        }
+    }
+
+    private func insertObsidianEmbedPreviews(
+        markdown: String,
+        displayText: String,
+        footnoteOrdinals: [String: Int],
+        linkReferences: [String: LinkReferenceDefinition],
+        baseURL: URL?,
+        attributes: [NSAttributedString.Key: Any],
+        into attributed: NSMutableAttributedString
+    ) {
+        guard baseURL != nil else {
+            return
+        }
+
+        let pattern = #"(?<!\\)!\[\[([^\]\n|]+)(?:\|([^\]\n]+))?\]\]"#
+        let nsMarkdown = markdown as NSString
+        let matches = (try? NSRegularExpression(pattern: pattern))?.matches(
+            in: markdown,
+            range: NSRange(location: 0, length: nsMarkdown.length)
+        ) ?? []
+        let nsDisplay = displayText as NSString
+        var edits: [(range: NSRange, replacement: NSAttributedString)] = []
+        var searchLocation = 0
+
+        for match in matches {
+            let target = nsMarkdown.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let aliasRange = match.range(at: 2)
+            let alias = aliasRange.location == NSNotFound ? nil : nsMarkdown.substring(with: aliasRange)
+            guard let localImageURL = localImageURL(for: target, baseURL: baseURL),
+                  let image = NSImage(contentsOf: localImageURL),
+                  let thumbnail = thumbnailImage(from: image, preferredSize: obsidianEmbedImageSize(from: alias))
+            else {
+                continue
+            }
+
+            let displayPlaceholder = stripInlineMarkdown(
+                nsMarkdown.substring(with: match.range),
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            )
+            let displayLocation = (stripInlineMarkdown(
+                nsMarkdown.substring(to: match.range.location),
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            ) as NSString).length
+            let displayRange = NSRange(location: displayLocation, length: (displayPlaceholder as NSString).length)
+
+            guard displayRange.location >= searchLocation,
+                  displayRange.upperBound <= nsDisplay.length
+            else {
+                continue
+            }
+
+            let preview = obsidianEmbedPreviewAttributedString(thumbnail: thumbnail, attributes: attributes)
+            let fallbackText = obsidianLocalImageEmbedFallbackText(target: target, localImageURL: localImageURL)
+            edits.append((
+                displayRange,
+                obsidianLocalImageEmbedFallbackAttributedString(
+                    text: fallbackText,
+                    target: target,
+                    attributes: attributes
+                )
+            ))
+            if let leadingWhitespaceRange = horizontalWhitespaceRangeBeforeObsidianEmbedPreview(
+                displayLocation: displayRange.location,
+                displayText: nsDisplay
+            ) {
+                let replacement = NSMutableAttributedString(string: "\n", attributes: attributes)
+                replacement.append(preview)
+                edits.append((leadingWhitespaceRange, replacement))
+            } else {
+                let replacement = NSMutableAttributedString()
+                if needsLineBreakBeforeObsidianEmbedPreview(
+                    displayLocation: displayRange.location,
+                    displayText: nsDisplay
+                ) {
+                    replacement.append(NSAttributedString(string: "\n", attributes: attributes))
+                }
+                replacement.append(preview)
+                edits.append((
+                    NSRange(location: displayRange.location, length: 0),
+                    replacement
+                ))
+            }
+            if let lineBreakEdit = lineBreakAfterObsidianEmbedFallbackEdit(
+                displayRange: displayRange,
+                displayText: nsDisplay,
+                attributes: attributes
+            ) {
+                edits.append(lineBreakEdit)
+            }
+            searchLocation = displayRange.upperBound
+        }
+
+        for edit in edits.sorted(by: { lhs, rhs in
+            if lhs.range.location == rhs.range.location {
+                return lhs.range.length > rhs.range.length
+            }
+            return lhs.range.location > rhs.range.location
+        }) {
+            attributed.replaceCharacters(in: edit.range, with: edit.replacement)
+        }
+    }
+
+    private func obsidianLocalImageEmbedFallbackText(target: String, localImageURL: URL) -> String {
+        let filename = localImageURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackName = filename.isEmpty ? obsidianDisplayTitle(from: target) : filename
+        return fallbackName.isEmpty ? "Embed" : "Embed: \(fallbackName)"
+    }
+
+    private func obsidianLocalImageEmbedFallbackAttributedString(
+        text: String,
+        target: String,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        var fallbackAttributes = attributes
+        for (key, value) in obsidianEmbedAttributes() {
+            fallbackAttributes[key] = value
+        }
+        fallbackAttributes[.toolTip] = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        return NSAttributedString(string: text, attributes: fallbackAttributes)
+    }
+
+    private func obsidianEmbedPreviewAttributedString(
+        thumbnail: NSImage,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.image = thumbnail
+        attachment.bounds = NSRect(origin: .zero, size: thumbnail.size)
+
+        let result = NSMutableAttributedString()
+        let attachmentString = NSMutableAttributedString(attachment: attachment)
+        attachmentString.addAttributes(attributes, range: NSRange(location: 0, length: attachmentString.length))
+        result.append(attachmentString)
+        result.append(NSAttributedString(string: "\n", attributes: attributes))
+        return result
+    }
+
+    private func needsLineBreakBeforeObsidianEmbedPreview(
+        displayLocation: Int,
+        displayText: NSString
+    ) -> Bool {
+        guard displayLocation > 0 else {
+            return false
+        }
+
+        let previousCharacter = displayText.character(at: displayLocation - 1)
+        return previousCharacter != 10
+            && previousCharacter != 13
+    }
+
+    private func horizontalWhitespaceRangeBeforeObsidianEmbedPreview(
+        displayLocation: Int,
+        displayText: NSString
+    ) -> NSRange? {
+        guard displayLocation > 0 else {
+            return nil
+        }
+
+        var start = displayLocation
+        while start > 0 {
+            let previousCharacter = displayText.character(at: start - 1)
+            guard isHorizontalWhitespace(previousCharacter) else {
+                break
+            }
+            start -= 1
+        }
+
+        guard start < displayLocation else {
+            return nil
+        }
+
+        return NSRange(location: start, length: displayLocation - start)
+    }
+
+    private func lineBreakAfterObsidianEmbedFallbackEdit(
+        displayRange: NSRange,
+        displayText: NSString,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> (range: NSRange, replacement: NSAttributedString)? {
+        let replacementStart = displayRange.upperBound
+        var scan = replacementStart
+        guard scan < displayText.length,
+              !isLineBreak(displayText.character(at: scan))
+        else {
+            return nil
+        }
+
+        while scan < displayText.length,
+              isHorizontalWhitespace(displayText.character(at: scan)) {
+            scan += 1
+        }
+
+        guard scan < displayText.length,
+              !isLineBreak(displayText.character(at: scan))
+        else {
+            return nil
+        }
+
+        if isObsidianEmbedTrailingPunctuation(displayText.character(at: scan)) {
+            let punctuationRange = NSRange(location: scan, length: 1)
+            let punctuation = displayText.substring(with: punctuationRange)
+            scan += 1
+            while scan < displayText.length,
+                  isHorizontalWhitespace(displayText.character(at: scan)) {
+                scan += 1
+            }
+
+            guard scan < displayText.length,
+                  !isLineBreak(displayText.character(at: scan))
+            else {
+                return nil
+            }
+
+            return (
+                NSRange(location: replacementStart, length: scan - replacementStart),
+                NSAttributedString(string: "\(punctuation)\n", attributes: attributes)
+            )
+        }
+
+        if scan > replacementStart {
+            return (
+                NSRange(location: replacementStart, length: scan - replacementStart),
+                NSAttributedString(string: "\n", attributes: attributes)
+            )
+        }
+
+        return (
+            NSRange(location: replacementStart, length: 0),
+            NSAttributedString(string: "\n", attributes: attributes)
+        )
+    }
+
+    private func isHorizontalWhitespace(_ character: unichar) -> Bool {
+        character == 9 || character == 32 || character == 0x00A0
+    }
+
+    private func isLineBreak(_ character: unichar) -> Bool {
+        character == 10 || character == 13
+    }
+
+    private func isObsidianEmbedTrailingPunctuation(_ character: unichar) -> Bool {
+        switch character {
+        case 33, 44, 46, 58, 59, 63,
+             0x3002, 0xFF01, 0xFF0C, 0xFF1A, 0xFF1B, 0xFF1F:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func applyObsidianTagStyle(
+        displayText: String,
+        to attributed: NSMutableAttributedString
+    ) {
+        let pattern = #"(?<![A-Za-z0-9_/#])#[\p{L}_][\p{L}\p{N}_/-]*"#
+        let nsDisplay = displayText as NSString
+        let matches = (try? NSRegularExpression(pattern: pattern))?.matches(
+            in: displayText,
+            range: NSRange(location: 0, length: nsDisplay.length)
+        ) ?? []
+
+        for match in matches {
+            guard !hasFixedPitchFont(in: attributed, at: match.range.location) else {
+                continue
+            }
+            attributed.addAttributes(obsidianTagAttributes(), range: match.range)
+        }
+    }
+
+    private func hasFixedPitchFont(in attributed: NSAttributedString, at location: Int) -> Bool {
+        guard location >= 0,
+              location < attributed.length,
+              let font = attributed.attribute(.font, at: location, effectiveRange: nil) as? NSFont
+        else {
+            return false
+        }
+
+        return NSFontManager.shared.traits(of: font).contains(.fixedPitchFontMask)
+    }
+
     private func linkAttributes(url: String, title: String? = nil) -> [NSAttributedString.Key: Any] {
+        if let obsidianTarget = obsidianMarkdownLinkTarget(from: url) {
+            return obsidianLinkAttributes(target: obsidianTarget)
+        }
+
         var attributes: [NSAttributedString.Key: Any] = [
             .foregroundColor: NSColor.systemBlue,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
@@ -3793,6 +5232,120 @@ public struct MarkdownAttributedRenderer {
             attributes[.toolTip] = title
         }
         return attributes
+    }
+
+    private func obsidianMarkdownLinkTarget(from rawURL: String) -> String? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let destination = markdownLinkDestination(from: trimmed)
+        guard !destination.isEmpty,
+              !hasExplicitURLScheme(destination)
+        else {
+            return nil
+        }
+
+        let decoded = destination.removingPercentEncoding ?? destination
+        let normalized = decoded
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalized.hasPrefix("#") {
+            return normalized
+        }
+
+        let parts = normalized.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let rawPath = parts.first else {
+            return nil
+        }
+
+        var path = String(rawPath).trimmingCharacters(in: .whitespacesAndNewlines)
+        while path.hasPrefix("./") {
+            path.removeFirst(2)
+        }
+
+        let fileExtension = (path as NSString).pathExtension.lowercased()
+        guard fileExtension.isEmpty || fileExtension == "md" else {
+            return nil
+        }
+
+        let notePath = fileExtension == "md" ? String(path.dropLast(3)) : path
+        guard !notePath.isEmpty else {
+            return nil
+        }
+
+        if parts.count > 1 {
+            return "\(notePath)#\(parts[1])"
+        }
+        return notePath
+    }
+
+    private func markdownLinkDestination(from rawURL: String) -> String {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("<"),
+           let closingIndex = trimmed.firstIndex(of: ">") {
+            let startIndex = trimmed.index(after: trimmed.startIndex)
+            return String(trimmed[startIndex..<closingIndex])
+        }
+
+        if let whitespaceIndex = trimmed.firstIndex(where: { $0.isWhitespace }) {
+            return String(trimmed[..<whitespaceIndex])
+        }
+        return trimmed
+    }
+
+    private func hasExplicitURLScheme(_ destination: String) -> Bool {
+        destination.range(
+            of: #"^[A-Za-z][A-Za-z0-9+.-]*:"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    private func obsidianLinkAttributes(target: String) -> [NSAttributedString.Key: Any] {
+        let decodedTarget = decodedObsidianTarget(from: target)
+        return [
+            .foregroundColor: NSColor.systemPurple,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .link: obsidianInternalURL(for: decodedTarget),
+            .toolTip: decodedTarget
+        ]
+    }
+
+    private func obsidianInternalURL(for target: String) -> String {
+        "obsidian://\(target.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: " ", with: "%20"))"
+    }
+
+    private func obsidianTagAttributes() -> [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.systemFont(ofSize: 13.2, weight: .medium),
+            .foregroundColor: NSColor.systemPurple,
+            .backgroundColor: obsidianTokenBackgroundColor()
+        ]
+    }
+
+    private func obsidianEmbedAttributes(target: String? = nil) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13.2, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .backgroundColor: obsidianTokenBackgroundColor()
+        ]
+        if let target,
+           !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            attributes[.toolTip] = decodedObsidianTarget(from: target)
+        }
+        return attributes
+    }
+
+    private func obsidianTokenBackgroundColor() -> NSColor {
+        NSColor(name: nil) { appearance in
+            let bestMatch = appearance.bestMatch(from: [.darkAqua, .aqua])
+            if bestMatch == .darkAqua {
+                return NSColor.systemPurple.withAlphaComponent(0.22)
+            }
+            return NSColor.systemPurple.withAlphaComponent(0.12)
+        }
     }
 
     private func applyAutolinkStyle(
@@ -3825,6 +5378,10 @@ public struct MarkdownAttributedRenderer {
                 continue
             }
 
+            guard !hasFixedPitchFont(in: attributed, at: displayRange.location) else {
+                continue
+            }
+
             attributed.addAttributes(
                 [
                     .foregroundColor: NSColor.systemBlue,
@@ -3849,15 +5406,46 @@ public struct MarkdownAttributedRenderer {
         ) ?? []
 
         for match in matches {
-            let url = nsDisplay.substring(with: match.range)
+            let linkRange = bareURLLinkRange(from: match.range, in: nsDisplay)
+            guard linkRange.length > 0 else {
+                continue
+            }
+
+            let url = nsDisplay.substring(with: linkRange)
+            guard attributed.attribute(.link, at: linkRange.location, effectiveRange: nil) == nil,
+                  !hasFixedPitchFont(in: attributed, at: linkRange.location)
+            else {
+                continue
+            }
             attributed.addAttributes(
                 [
                     .foregroundColor: NSColor.systemBlue,
                     .underlineStyle: NSUnderlineStyle.single.rawValue,
                     .link: url
                 ],
-                range: match.range
+                range: linkRange
             )
+        }
+    }
+
+    private func bareURLLinkRange(from range: NSRange, in text: NSString) -> NSRange {
+        var length = range.length
+        while length > 0 {
+            let character = text.character(at: range.location + length - 1)
+            guard isTrailingBareURLPunctuation(character) else {
+                break
+            }
+            length -= 1
+        }
+        return NSRange(location: range.location, length: length)
+    }
+
+    private func isTrailingBareURLPunctuation(_ character: unichar) -> Bool {
+        switch character {
+        case 33, 44, 46, 58, 59, 63:
+            return true
+        default:
+            return false
         }
     }
 
@@ -3865,6 +5453,7 @@ public struct MarkdownAttributedRenderer {
         markdown: String,
         displayText: String,
         footnoteOrdinals: [String: Int],
+        footnoteDefinitions: [String: String],
         to attributed: NSMutableAttributedString
     ) {
         let pattern = #"\[\^([^\]]+)\]"#
@@ -3889,15 +5478,67 @@ public struct MarkdownAttributedRenderer {
             }
 
             attributed.addAttributes(
-                [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-                    .foregroundColor: NSColor.systemBlue,
-                    .baselineOffset: 4
-                ],
+                footnoteReferenceAttributes(tooltip: footnoteDefinitions[identifier]),
                 range: displayRange
             )
             searchLocation = displayRange.location + displayRange.length
         }
+    }
+
+    private func applyInlineFootnoteReferenceStyle(
+        markdown: String,
+        displayText: String,
+        footnoteOrdinals: [String: Int],
+        linkReferences: [String: LinkReferenceDefinition],
+        to attributed: NSMutableAttributedString
+    ) {
+        let nsMarkdown = markdown as NSString
+        let matches = (try? NSRegularExpression(pattern: inlineFootnotePattern()))?.matches(
+            in: markdown,
+            range: NSRange(location: 0, length: nsMarkdown.length)
+        ) ?? []
+        let nsDisplay = displayText as NSString
+        var searchLocation = 0
+
+        for match in matches {
+            let rawFootnote = nsMarkdown.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let identifier = inlineFootnoteIdentifier(text: rawFootnote)
+            let label = footnoteReferenceLabel(identifier: identifier, footnoteOrdinals: footnoteOrdinals)
+            let displayRange = nsDisplay.range(
+                of: label,
+                range: NSRange(location: searchLocation, length: nsDisplay.length - searchLocation)
+            )
+
+            guard displayRange.location != NSNotFound else {
+                continue
+            }
+
+            let tooltip = stripInlineMarkdown(
+                rawFootnote,
+                footnoteOrdinals: footnoteOrdinals,
+                linkReferences: linkReferences
+            )
+            attributed.addAttributes(
+                footnoteReferenceAttributes(tooltip: tooltip),
+                range: displayRange
+            )
+            searchLocation = displayRange.location + displayRange.length
+        }
+    }
+
+    private func footnoteReferenceAttributes(tooltip: String? = nil) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.systemBlue,
+            .baselineOffset: 4,
+            .underlineStyle: NSUnderlineStyle.single.union(.patternDot).rawValue,
+            .underlineColor: NSColor.tertiaryLabelColor
+        ]
+        if let tooltip,
+           !tooltip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            attributes[.toolTip] = tooltip
+        }
+        return attributes
     }
 
     private func bodyAttributes() -> [NSAttributedString.Key: Any] {
@@ -3959,7 +5600,10 @@ public struct MarkdownAttributedRenderer {
         ]
     }
 
-    private func quoteAttributes(calloutKind: CalloutKind? = nil) -> [NSAttributedString.Key: Any] {
+    private func quoteAttributes(
+        calloutKind: CalloutKind? = nil,
+        calloutFoldState: CalloutFoldState? = nil
+    ) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 16),
             .foregroundColor: NSColor.secondaryLabelColor,
@@ -3967,6 +5611,9 @@ public struct MarkdownAttributedRenderer {
         ]
         if let calloutKind {
             attributes[.markPromptCalloutKind] = calloutKind.rawValue
+        }
+        if let calloutFoldState {
+            attributes[.markPromptCalloutFoldState] = calloutFoldState.rawValue
         }
         return attributes
     }
@@ -4008,14 +5655,34 @@ public struct MarkdownAttributedRenderer {
 
     private func calloutColor(for kind: CalloutKind) -> NSColor {
         switch kind {
+        case .abstract:
+            return NSColor.systemTeal
+        case .bug:
+            return NSColor.systemRed
         case .caution:
             return NSColor.systemRed
+        case .danger:
+            return NSColor.systemRed
+        case .example:
+            return NSColor.systemPurple
+        case .failure:
+            return NSColor.systemRed
+        case .info:
+            return NSColor.systemBlue
         case .important:
             return NSColor.systemPurple
         case .note:
             return NSColor.systemBlue
+        case .question:
+            return NSColor.systemOrange
+        case .quote:
+            return NSColor.secondaryLabelColor
+        case .success:
+            return NSColor.systemGreen
         case .tip:
             return NSColor.systemGreen
+        case .todo:
+            return NSColor.systemBlue
         case .warning:
             return NSColor.systemOrange
         }
@@ -4225,8 +5892,14 @@ private struct PreviewPalette {
     }
 }
 
+extension NSAttributedString.Key {
+    static let markPromptTaskMarkerSourceRange = NSAttributedString.Key("MarkPromptTaskMarkerSourceRange")
+    static let markPromptTaskMarkerCharacter = NSAttributedString.Key("MarkPromptTaskMarkerCharacter")
+}
+
 private extension NSAttributedString.Key {
     static let markPromptCalloutKind = NSAttributedString.Key("MarkPromptCalloutKind")
+    static let markPromptCalloutFoldState = NSAttributedString.Key("MarkPromptCalloutFoldState")
 }
 
 private extension String {

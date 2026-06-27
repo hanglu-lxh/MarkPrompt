@@ -45,7 +45,7 @@ struct MarkPromptApp: App {
                     Menu("打开历史") {
                         ForEach(appState.recentDocumentURLs, id: \.path) { url in
                             Button(url.lastPathComponent) {
-                                appState.openDocument(at: url)
+                                appState.openRecentDocument(at: url)
                             }
                         }
                     }
@@ -60,12 +60,12 @@ struct MarkPromptApp: App {
 
             CommandGroup(replacing: .undoRedo) {
                 Button("撤销") {
-                    NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                    NSApp.sendAction(#selector(MarkPromptUndoRedoCommandTarget.undo(_:)), to: nil, from: nil)
                 }
                 .keyboardShortcut("z", modifiers: [.command])
 
                 Button("重做") {
-                    NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+                    NSApp.sendAction(#selector(MarkPromptUndoRedoCommandTarget.redo(_:)), to: nil, from: nil)
                 }
                 .keyboardShortcut("Z", modifiers: [.command, .shift])
             }
@@ -84,6 +84,25 @@ struct MarkPromptApp: App {
                 }
                 .keyboardShortcut("A", modifiers: [.command, .shift])
                 .disabled(!appState.canCreateAnnotation)
+            }
+
+            CommandMenu("任务") {
+                Button("切换任务状态") {
+                    NSApp.sendAction(#selector(MarkPromptTaskCommandTarget.toggleTaskMarkerStatus(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("l", modifiers: [.command])
+
+                Divider()
+
+                Button("下一个任务") {
+                    NSApp.sendAction(#selector(MarkPromptTaskCommandTarget.selectNextTaskMarker(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("j", modifiers: [.command, .option])
+
+                Button("上一个任务") {
+                    NSApp.sendAction(#selector(MarkPromptTaskCommandTarget.selectPreviousTaskMarker(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command, .option])
             }
 
             CommandMenu("Prompt") {
@@ -111,6 +130,17 @@ struct MarkPromptApp: App {
 
         return URL(fileURLWithPath: arguments[openFlagIndex + 1])
     }
+}
+
+@objc private protocol MarkPromptUndoRedoCommandTarget {
+    func undo(_ sender: Any?)
+    func redo(_ sender: Any?)
+}
+
+@objc private protocol MarkPromptTaskCommandTarget {
+    func toggleTaskMarkerStatus(_ sender: Any?)
+    func selectNextTaskMarker(_ sender: Any?)
+    func selectPreviousTaskMarker(_ sender: Any?)
 }
 
 final class MarkPromptApplicationDelegate: NSObject, NSApplicationDelegate {

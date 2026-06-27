@@ -110,12 +110,49 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertGreaterThan(block?.sourceRange.length ?? 0, titleRange.length)
     }
 
+    func testRendersFrontmatterAsReadablePropertiesBlock() {
+        let markdown = """
+        ---
+        title: Reader Fixture Frontmatter
+        owner: MarkPrompt
+        tags:
+          - markdown
+          - reader
+        ---
+
+        # Body
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributed = document.renderModel.attributedText
+        let renderedText = attributed.string
+
+        XCTAssertTrue(renderedText.hasPrefix("Properties\n"))
+        XCTAssertTrue(renderedText.contains("Title: Reader Fixture Frontmatter"))
+        XCTAssertTrue(renderedText.contains("Owner: MarkPrompt"))
+        XCTAssertTrue(renderedText.contains("Tags: markdown  reader"))
+        XCTAssertFalse(renderedText.contains("Metadata:"))
+        XCTAssertFalse(renderedText.contains("---"))
+        XCTAssertFalse(renderedText.contains("  - markdown"))
+        XCTAssertTrue(containsTextBlock(in: attributed, for: "Properties"))
+        XCTAssertNotNil(attribute(.backgroundColor, for: "markdown", in: attributed))
+        XCTAssertNotNil(attribute(.backgroundColor, for: "reader", in: attributed))
+        XCTAssertEqual(blockKind(containing: "Properties", in: document), .metadata)
+        XCTAssertEqual(blockKind(containing: "markdown", in: document), .metadata)
+        XCTAssertEqual(blockKind(containing: "Body", in: document), .heading)
+    }
+
     func testRendersReaderFocusedMarkdownExtensions() {
         let markdown = """
         # Reader Fixtures
 
         - [x] Checked task
+          Completed continuation should look done.
         - [ ] Open task
+        - [-] Rejected task
+        - [/] In-progress task
+        - [!] Important task
+        - [a] Arbitrary completed task
 
         Paragraph with **bold**, *italic*, ~~deleted~~, `inline code`, [link](https://example.com), and a footnote.[^note]
 
@@ -134,15 +171,56 @@ final class MarkdownParserTests: XCTestCase {
 
         let document = MarkdownParser().parse(markdown)
         let renderedText = document.renderModel.renderedPlainText
+        let attributed = document.renderModel.attributedText
 
         XCTAssertTrue(renderedText.contains("☑ Checked task"))
         XCTAssertTrue(renderedText.contains("☐ Open task"))
+        XCTAssertTrue(renderedText.contains("☒ Rejected task"))
+        XCTAssertTrue(renderedText.contains("◩ In-progress task"))
+        XCTAssertTrue(renderedText.contains("⚠ Important task"))
+        XCTAssertTrue(renderedText.contains("☑ Arbitrary completed task"))
+        XCTAssertFalse(renderedText.contains("[-] Rejected task"))
+        XCTAssertFalse(renderedText.contains("[/] In-progress task"))
+        XCTAssertFalse(renderedText.contains("[!] Important task"))
+        XCTAssertFalse(renderedText.contains("[a] Arbitrary completed task"))
+        XCTAssertTrue(hasStrikethroughAttribute(for: "Checked task", in: attributed))
+        XCTAssertTrue(hasStrikethroughAttribute(for: "Completed continuation should look done.", in: attributed))
+        XCTAssertTrue(hasStrikethroughAttribute(for: "Arbitrary completed task", in: attributed))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "Open task", in: attributed))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "In-progress task", in: attributed))
+        XCTAssertFalse(hasStrikethroughAttribute(for: "Important task", in: attributed))
+        XCTAssertEqual(
+            taskMarkerSourceRange(for: "☑ Checked task", in: attributed),
+            sourceRange(of: "[x]", in: markdown)
+        )
+        XCTAssertEqual(
+            taskMarkerSourceRange(for: "☐ Open task", in: attributed),
+            sourceRange(of: "[ ]", in: markdown)
+        )
+        XCTAssertEqual(
+            attribute(NSAttributedString.Key("MarkPromptTaskMarkerCharacter"), for: "☐ Open task", in: attributed) as? String,
+            " "
+        )
+        XCTAssertEqual(
+            attribute(NSAttributedString.Key("MarkPromptTaskMarkerCharacter"), for: "◩ In-progress task", in: attributed) as? String,
+            "/"
+        )
+        XCTAssertNil(attribute(NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"), for: "Checked task", in: attributed))
+        XCTAssertNil(attribute(NSAttributedString.Key("MarkPromptTaskMarkerCharacter"), for: "Checked task", in: attributed))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "☑ Checked task", in: attributed) as? String,
+            "点击或按 Space/⌘L 切换完成/待办；⌘⌥J/K 跳转任务；右键可标记待办/完成/取消/进行中/重要。"
+        )
         XCTAssertTrue(renderedText.contains("deleted"))
         XCTAssertFalse(renderedText.contains("~~deleted~~"))
         XCTAssertTrue(renderedText.contains("Image: Architecture diagram"))
         XCTAssertTrue(renderedText.contains("footnote.¹"))
         XCTAssertTrue(renderedText.contains("1. Footnote text with formatting."))
         XCTAssertFalse(renderedText.contains("[^note]"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "¹", in: attributed) as? String,
+            "Footnote text with formatting."
+        )
         XCTAssertTrue(renderedText.contains("Formula"))
         XCTAssertFalse(renderedText.contains("$$"))
         XCTAssertTrue(renderedText.contains("Name"))
@@ -155,6 +233,7 @@ final class MarkdownParserTests: XCTestCase {
             .right
         )
         XCTAssertTrue(document.renderModel.sourceMap.blocks.contains { $0.kind == .taskList })
+        XCTAssertEqual(blockKind(containing: "Completed continuation should look done.", in: document), .taskList)
         XCTAssertTrue(document.renderModel.sourceMap.blocks.contains { $0.kind == .image })
         XCTAssertTrue(document.renderModel.sourceMap.blocks.contains { $0.kind == .footnote })
         XCTAssertTrue(document.renderModel.sourceMap.blocks.contains { $0.kind == .mathBlock })
@@ -220,6 +299,33 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(renderedText.contains("FLUX|2"))
         XCTAssertFalse(renderedText.contains("|———"))
         XCTAssertEqual(paragraphAlignment(for: "32B", in: attributedText)?.rawValue, NSTextAlignment.right.rawValue)
+    }
+
+    func testRendersObsidianImageEmbedsInsideTables() {
+        let markdown = """
+        | Evidence | Preview | Status |
+        |---|---|---|
+        | Screenshot | ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|140]] | Ready |
+        """
+
+        let document = MarkdownParser().parse(markdown, fileURL: readerFixtureURL(named: "03_tables_wide.md"))
+        let attributedText = document.renderModel.attributedText
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(containsNativeTextTable(in: attributedText))
+        XCTAssertTrue(renderedText.contains("Screenshot"))
+        XCTAssertTrue(renderedText.contains("Ready"))
+        XCTAssertTrue(renderedText.contains("Embed: markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: ../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: 140"))
+        XCTAssertFalse(renderedText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|140]]"))
+        XCTAssertEqual(attachmentCount(in: attributedText), 1)
+        XCTAssertEqual(firstAttachmentSize(in: attributedText)?.width ?? 0, 140, accuracy: 0.5)
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
+        XCTAssertEqual(blockKind(containing: "Embed: markprompt_interaction_prototype_v4.png", in: document), .table)
     }
 
     func testGFMTableAlignmentMarkersDriveTextKitParagraphAlignment() {
@@ -341,7 +447,7 @@ final class MarkdownParserTests: XCTestCase {
     }
 
     func testAppliesInlineMarkdownAttributesWithoutBreakingPlainText() {
-        let markdown = "Paragraph with **bold**, *italic*, ~~deleted~~, ==highlighted==, ++inserted text++, `inline code`, H~2~O, x^2^, :rocket:, A &amp; B &lt; C, &#9731;, and [link](https://example.com). Literal technical text keeps API_TOKEN, snake_case, a_b_c, and 2 * 3. Escaped markers keep \\*literal asterisks\\*, \\_literal underscores\\_, \\[not link](https://example.com/no-link), and \\![not image](https://example.com/no-image.png)."
+        let markdown = "Paragraph with **bold**, *italic*, ~~deleted~~, ==highlighted==, ++inserted text++, `inline code`, H~2~O, x^2^, :rocket:, A &amp; B &lt; C, &#9731;, and [link](https://example.com). Literal technical text keeps API_TOKEN, snake_case, a_b_c, and 2 * 3. Tags style #reader/tag, but code `#not-a-tag` stays code. Bare URLs link https://example.com/live-url and autolinks link <https://example.com/autolink-url>, but code URLs `https://example.com/code-url` and `<https://example.com/code-autolink>` stay code. Escaped markers keep \\*literal asterisks\\*, \\_literal underscores\\_, \\[not link](https://example.com/no-link), and \\![not image](https://example.com/no-image.png)."
         let document = MarkdownParser().parse(markdown)
         let attributed = document.renderModel.attributedText
         let renderedText = attributed.string as NSString
@@ -376,6 +482,12 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertTrue(document.renderModel.renderedPlainText.contains("snake_case"))
         XCTAssertTrue(document.renderModel.renderedPlainText.contains("a_b_c"))
         XCTAssertTrue(document.renderModel.renderedPlainText.contains("2 * 3"))
+        XCTAssertTrue(document.renderModel.renderedPlainText.contains("#reader/tag"))
+        XCTAssertTrue(document.renderModel.renderedPlainText.contains("#not-a-tag"))
+        XCTAssertTrue(document.renderModel.renderedPlainText.contains("https://example.com/live-url"))
+        XCTAssertTrue(document.renderModel.renderedPlainText.contains("https://example.com/autolink-url"))
+        XCTAssertTrue(document.renderModel.renderedPlainText.contains("https://example.com/code-url"))
+        XCTAssertTrue(document.renderModel.renderedPlainText.contains("<https://example.com/code-autolink>"))
         XCTAssertTrue(document.renderModel.renderedPlainText.contains("*literal asterisks*"))
         XCTAssertTrue(document.renderModel.renderedPlainText.contains("_literal underscores_"))
         XCTAssertTrue(document.renderModel.renderedPlainText.contains("[not link](https://example.com/no-link)"))
@@ -401,6 +513,15 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(attributed.attribute(.link, at: linkRange.location, effectiveRange: nil) as? String, "https://example.com")
         XCTAssertFalse(hasItalicFont(for: "snake_case", in: attributed))
         XCTAssertFalse(hasItalicFont(for: "a_b_c", in: attributed))
+        XCTAssertTrue(hasFixedPitchFont(for: "#not-a-tag", in: attributed))
+        XCTAssertFalse(hasFixedPitchFont(for: "#reader/tag", in: attributed))
+        XCTAssertNotNil(attribute(.backgroundColor, for: "#reader/tag", in: attributed) as? NSColor)
+        XCTAssertEqual(attribute(.link, for: "https://example.com/live-url", in: attributed) as? String, "https://example.com/live-url")
+        XCTAssertEqual(attribute(.link, for: "https://example.com/autolink-url", in: attributed) as? String, "https://example.com/autolink-url")
+        XCTAssertNil(attribute(.link, for: "https://example.com/code-url", in: attributed))
+        XCTAssertNil(attribute(.link, for: "https://example.com/code-autolink", in: attributed))
+        XCTAssertTrue(hasFixedPitchFont(for: "https://example.com/code-url", in: attributed))
+        XCTAssertTrue(hasFixedPitchFont(for: "https://example.com/code-autolink", in: attributed))
         XCTAssertFalse(hasItalicFont(for: "literal asterisks", in: attributed))
         XCTAssertFalse(hasItalicFont(for: "literal underscores", in: attributed))
         XCTAssertNil(attribute(.link, for: "not link", in: attributed))
@@ -425,6 +546,21 @@ final class MarkdownParserTests: XCTestCase {
 
         > [!WARNING]
         > Risk needs attention.
+
+        > [!todo]+ Ship review workflow
+        > Create a focused note.
+
+        > [!faq]- Why keep source text?
+        > Anchors need selectable text.
+
+        > [!bug]
+        > Renderer bug reports should stand out.
+
+        > [!review]
+        > Custom callout types should fall back to note styling.
+
+        > [!design-review]- Needs design check
+        > Custom folded callouts should still hide source syntax.
         """
         let document = MarkdownParser().parse(markdown)
         let attributed = document.renderModel.attributedText
@@ -432,11 +568,59 @@ final class MarkdownParserTests: XCTestCase {
 
         XCTAssertFalse(renderedText.contains("[!NOTE]"))
         XCTAssertFalse(renderedText.contains("[!WARNING]"))
+        XCTAssertFalse(renderedText.contains("[!todo]+"))
+        XCTAssertFalse(renderedText.contains("[!faq]-"))
+        XCTAssertFalse(renderedText.contains("[!bug]"))
+        XCTAssertFalse(renderedText.contains("[!review]"))
+        XCTAssertFalse(renderedText.contains("[!design-review]-"))
+        XCTAssertFalse(renderedText.contains("+ Ship review workflow"))
+        XCTAssertFalse(renderedText.contains("- Why keep source text?"))
         XCTAssertTrue(renderedText.contains("Note\nReader callouts"))
         XCTAssertTrue(renderedText.contains("Warning\nRisk needs"))
+        XCTAssertTrue(renderedText.contains("▾ Ship review workflow\nCreate a focused note."))
+        XCTAssertTrue(renderedText.contains("▸ Why keep source text?\nAnchors need selectable text."))
+        XCTAssertTrue(renderedText.contains("Bug\nRenderer bug reports"))
+        XCTAssertTrue(renderedText.contains("Review\nCustom callout types should fall back"))
+        XCTAssertTrue(renderedText.contains("▸ Needs design check\nCustom folded callouts"))
         XCTAssertTrue(document.renderModel.sourceMap.blocks.contains { $0.kind == .blockquote })
         XCTAssertNotNil(attribute(.font, for: "Note", in: attributed) as? NSFont)
         XCTAssertNotNil(attribute(.foregroundColor, for: "Warning", in: attributed) as? NSColor)
+        XCTAssertEqual(
+            attribute(.toolTip, for: "▾", in: attributed) as? String,
+            "Default expanded in Obsidian"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "▸", in: attributed) as? String,
+            "Default collapsed in Obsidian"
+        )
+        XCTAssertNotNil(attribute(.foregroundColor, for: "Bug", in: attributed) as? NSColor)
+        XCTAssertEqual(blockKind(containing: "Custom callout types should fall back", in: document), .blockquote)
+        XCTAssertEqual(blockKind(containing: "Needs design check", in: document), .blockquote)
+    }
+
+    func testRendersNestedObsidianCalloutMarkersAsReadableIndentedTitles() {
+        let markdown = """
+        > [!NOTE] Parent review context
+        > Parent context should stay visible.
+        > > [!tip]- Nested reviewer hint
+        > > Inner nested detail should keep indentation.
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributed = document.renderModel.attributedText
+        let renderedText = attributed.string
+
+        XCTAssertTrue(renderedText.contains("Parent review context"))
+        XCTAssertTrue(renderedText.contains("Parent context should stay visible."))
+        XCTAssertTrue(renderedText.contains("▸ Nested reviewer hint"))
+        XCTAssertTrue(renderedText.contains("Inner nested detail should keep indentation."))
+        XCTAssertFalse(renderedText.contains("[!tip]-"))
+        XCTAssertFalse(renderedText.contains("- Nested reviewer hint"))
+        XCTAssertEqual(blockKind(containing: "Nested reviewer hint", in: document), .blockquote)
+        XCTAssertGreaterThan(
+            firstLineIndent(for: "▸ Nested reviewer hint", in: attributed),
+            firstLineIndent(for: "Parent context should stay visible", in: attributed)
+        )
     }
 
     func testRendersBlockquoteLazyContinuationsAndNestedMarkers() {
@@ -556,19 +740,22 @@ final class MarkdownParserTests: XCTestCase {
         let markdown = """
         *[API]: Application Programming Interface
 
-        A stable API remains selectable.
+        A stable API remains selectable, while code `API()` stays plain code.
         """
         let document = MarkdownParser().parse(markdown)
         let attributed = document.renderModel.attributedText
         let renderedText = attributed.string
 
-        XCTAssertTrue(renderedText.contains("A stable API remains selectable."))
+        XCTAssertTrue(renderedText.contains("A stable API remains selectable, while code API() stays plain code."))
         XCTAssertFalse(renderedText.contains("Application Programming Interface"))
         XCTAssertEqual(
             attribute(.toolTip, for: "API", in: attributed) as? String,
             "Application Programming Interface"
         )
         XCTAssertTrue(hasDottedUnderline(for: "API", in: attributed))
+        XCTAssertNil(attribute(.toolTip, for: "API()", in: attributed))
+        XCTAssertFalse(hasDottedUnderline(for: "API()", in: attributed))
+        XCTAssertTrue(hasFixedPitchFont(for: "API()", in: attributed))
     }
 
     func testRendersReferenceStyleLinksAndImages() {
@@ -632,6 +819,410 @@ final class MarkdownParserTests: XCTestCase {
         }
     }
 
+    func testRendersObsidianFlavoredInlineSyntaxAsReadableText() {
+        let markdown = """
+        Link to [[Daily note]] and [[Project plan|project plan]] with #review/urgent.
+        Jump to [[Prompt Quality#Review checklist]] and [[Decision Log#^accepted]] without losing anchors.
+        Extension targets should read cleanly as [[Research/Prompt Notes.md#Methods]].
+        Encoded targets should read cleanly as [[Research/Prompt%20Notes.md#Method%20Plan]].
+        Alias still wins for [[Reader Vault/Weekly Review#Retro|weekly retro]].
+
+        Attachment ![[Architecture.png]] next to a hidden %%draft-only comment%% note. ^review-block
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributed = document.renderModel.attributedText
+        let renderedText = attributed.string
+
+        XCTAssertTrue(renderedText.contains("Link to Daily note and project plan with #review/urgent."))
+        XCTAssertTrue(renderedText.contains("Jump to Prompt Quality#Review checklist and Decision Log#^accepted without losing anchors."))
+        XCTAssertTrue(renderedText.contains("Extension targets should read cleanly as Prompt Notes#Methods."))
+        XCTAssertTrue(renderedText.contains("Encoded targets should read cleanly as Prompt Notes#Method Plan."))
+        XCTAssertTrue(renderedText.contains("Alias still wins for weekly retro."))
+        XCTAssertTrue(renderedText.contains("Attachment Embed: Architecture.png next to a hidden note."))
+        XCTAssertFalse(renderedText.contains("[[Daily note]]"))
+        XCTAssertFalse(renderedText.contains("[[Project plan|project plan]]"))
+        XCTAssertFalse(renderedText.contains("[[Prompt Quality#Review checklist]]"))
+        XCTAssertFalse(renderedText.contains("[[Decision Log#^accepted]]"))
+        XCTAssertFalse(renderedText.contains("Prompt Notes.md#Methods"))
+        XCTAssertFalse(renderedText.contains("Prompt%20Notes"))
+        XCTAssertFalse(renderedText.contains("Method%20Plan"))
+        XCTAssertFalse(renderedText.contains("[[Reader Vault/Weekly Review#Retro|weekly retro]]"))
+        XCTAssertFalse(renderedText.contains("![[Architecture.png]]"))
+        XCTAssertFalse(renderedText.contains("%%draft-only comment%%"))
+        XCTAssertFalse(renderedText.contains("^review-block"))
+        XCTAssertEqual(attribute(.link, for: "Daily note", in: attributed) as? String, "obsidian://Daily%20note")
+        XCTAssertEqual(attribute(.link, for: "project plan", in: attributed) as? String, "obsidian://Project%20plan")
+        XCTAssertEqual(attribute(.link, for: "Prompt Quality#Review checklist", in: attributed) as? String, "obsidian://Prompt%20Quality#Review%20checklist")
+        XCTAssertEqual(attribute(.toolTip, for: "Prompt Quality#Review checklist", in: attributed) as? String, "Prompt Quality#Review checklist")
+        XCTAssertEqual(attribute(.link, for: "Decision Log#^accepted", in: attributed) as? String, "obsidian://Decision%20Log#^accepted")
+        XCTAssertEqual(attribute(.link, for: "Prompt Notes#Methods", in: attributed) as? String, "obsidian://Research/Prompt%20Notes.md#Methods")
+        XCTAssertEqual(attribute(.toolTip, for: "Prompt Notes#Methods", in: attributed) as? String, "Research/Prompt Notes.md#Methods")
+        XCTAssertEqual(attribute(.link, for: "Prompt Notes#Method Plan", in: attributed) as? String, "obsidian://Research/Prompt%20Notes.md#Method%20Plan")
+        XCTAssertEqual(attribute(.toolTip, for: "Prompt Notes#Method Plan", in: attributed) as? String, "Research/Prompt Notes.md#Method Plan")
+        XCTAssertEqual(attribute(.link, for: "weekly retro", in: attributed) as? String, "obsidian://Reader%20Vault/Weekly%20Review#Retro")
+        XCTAssertNotNil(attribute(.backgroundColor, for: "#review/urgent", in: attributed))
+        XCTAssertNotNil(attribute(.backgroundColor, for: "Embed: Architecture.png", in: attributed))
+    }
+
+    func testHidesStandaloneObsidianBlockIDsBeforeParagraphParsing() {
+        let markdown = """
+        Visible decision paragraph.
+
+        ^accepted-decision
+
+        Follow-up paragraph with [[Decision Log#^accepted-decision]].
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributed = document.renderModel.attributedText
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Visible decision paragraph."))
+        XCTAssertTrue(renderedText.contains("Follow-up paragraph with Decision Log#^accepted-decision."))
+        XCTAssertFalse(renderedText.contains("^accepted-decision\n"))
+        XCTAssertFalse(renderedText.contains("\n^accepted-decision"))
+        XCTAssertEqual(
+            attribute(.link, for: "Decision Log#^accepted-decision", in: attributed) as? String,
+            "obsidian://Decision%20Log#^accepted-decision"
+        )
+        XCTAssertEqual(blockKind(containing: "Visible decision paragraph", in: document), .paragraph)
+        XCTAssertEqual(blockKind(containing: "Follow-up paragraph", in: document), .paragraph)
+    }
+
+    func testRendersObsidianMarkdownFormatInternalLinksAsLocalLinks() {
+        let markdown = """
+        Markdown internal [review checklist](Prompt%20Quality.md#Review%20checklist), nested [weekly retro](Reader%20Vault/Weekly%20Review.md#Retro), extensionless [plain note](Three%20laws%20of%20motion), extensionless anchored [retro note](Reader%20Vault/Weekly%20Review#Retro), and same-note [decision block](#^accepted) should behave like wikilinks.
+        External [docs](https://example.com/docs) should stay external.
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributed = document.renderModel.attributedText
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Markdown internal review checklist, nested weekly retro, extensionless plain note, extensionless anchored retro note, and same-note decision block should behave like wikilinks."))
+        XCTAssertFalse(renderedText.contains("Prompt%20Quality.md"))
+        XCTAssertFalse(renderedText.contains("Reader%20Vault/Weekly%20Review.md"))
+        XCTAssertFalse(renderedText.contains("Three%20laws%20of%20motion"))
+        XCTAssertFalse(renderedText.contains("Reader%20Vault/Weekly%20Review#Retro"))
+        XCTAssertFalse(renderedText.contains("#^accepted)"))
+        XCTAssertEqual(
+            attribute(.link, for: "review checklist", in: attributed) as? String,
+            "obsidian://Prompt%20Quality#Review%20checklist"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "review checklist", in: attributed) as? String,
+            "Prompt Quality#Review checklist"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "weekly retro", in: attributed) as? String,
+            "obsidian://Reader%20Vault/Weekly%20Review#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "weekly retro", in: attributed) as? String,
+            "Reader Vault/Weekly Review#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "plain note", in: attributed) as? String,
+            "obsidian://Three%20laws%20of%20motion"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "plain note", in: attributed) as? String,
+            "Three laws of motion"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "retro note", in: attributed) as? String,
+            "obsidian://Reader%20Vault/Weekly%20Review#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "retro note", in: attributed) as? String,
+            "Reader Vault/Weekly Review#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "decision block", in: attributed) as? String,
+            "obsidian://#^accepted"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "decision block", in: attributed) as? String,
+            "#^accepted"
+        )
+        XCTAssertEqual(
+            attribute(.link, for: "docs", in: attributed) as? String,
+            "https://example.com/docs"
+        )
+        XCTAssertEqual(blockKind(containing: "review checklist", in: document), .paragraph)
+    }
+
+    func testHidesObsidianBlockCommentsBeforeBlockParsing() {
+        let markdown = """
+        Visible before.
+
+        %%
+        Reviewer-only checklist:
+        - hidden task marker should never become a list
+
+        Hidden paragraph after a blank line.
+        %%
+
+        Visible after with [[Daily note]].
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Visible before."))
+        XCTAssertTrue(renderedText.contains("Visible after with Daily note."))
+        XCTAssertFalse(renderedText.contains("%%"))
+        XCTAssertFalse(renderedText.contains("Reviewer-only checklist"))
+        XCTAssertFalse(renderedText.contains("hidden task marker"))
+        XCTAssertFalse(renderedText.contains("Hidden paragraph after a blank line"))
+        XCTAssertEqual(blockKind(containing: "Visible after with Daily note.", in: document), .paragraph)
+        XCTAssertEqual(attribute(.link, for: "Daily note", in: document.renderModel.attributedText) as? String, "obsidian://Daily%20note")
+    }
+
+    func testRendersObsidianInlineFootnotesAsReadableReferences() {
+        let markdown = """
+        Inline review evidence^[Keep this reviewer context out of selected text.] stays readable.
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Inline review evidence¹ stays readable."))
+        XCTAssertFalse(renderedText.contains("^[Keep this reviewer context out of selected text.]"))
+        XCTAssertEqual(blockKind(containing: "Inline review evidence", in: document), .paragraph)
+        XCTAssertEqual(
+            attribute(.toolTip, for: "¹", in: document.renderModel.attributedText) as? String,
+            "Keep this reviewer context out of selected text."
+        )
+        XCTAssertNotNil(attribute(.baselineOffset, for: "¹", in: document.renderModel.attributedText))
+        XCTAssertEqual(
+            attribute(.underlineStyle, for: "¹", in: document.renderModel.attributedText) as? Int,
+            NSUnderlineStyle.single.union(.patternDot).rawValue
+        )
+        XCTAssertNotNil(attribute(.underlineColor, for: "¹", in: document.renderModel.attributedText) as? NSColor)
+    }
+
+    func testRendersTwoSpaceFootnoteContinuationsInsideFootnoteBlock() {
+        let markdown = """
+        Claim needs context.[^review]
+
+        [^review]: First reviewer detail.
+          Second detail uses Obsidian two-space continuation.
+
+        After footnote paragraph.
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Claim needs context.¹"))
+        XCTAssertTrue(renderedText.contains("1. First reviewer detail. Second detail uses Obsidian two-space continuation."))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "¹", in: document.renderModel.attributedText) as? String,
+            "First reviewer detail. Second detail uses Obsidian two-space continuation."
+        )
+        XCTAssertEqual(
+            blockKind(containing: "Second detail uses Obsidian two-space continuation", in: document),
+            .footnote
+        )
+        XCTAssertEqual(blockKind(containing: "After footnote paragraph.", in: document), .paragraph)
+    }
+
+    func testRendersLocalObsidianImageEmbedsWithPreviewAndConciseSelectableFallback() {
+        let markdown = """
+        Image embed ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|220]] stays selectable.
+        """
+
+        let document = MarkdownParser().parse(markdown, fileURL: readerFixtureURL(named: "10_review_prd_mix.md"))
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Embed: markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: ../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: 220"))
+        XCTAssertFalse(renderedText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|220]]"))
+        XCTAssertEqual(attachmentCount(in: document.renderModel.attributedText), 1)
+        XCTAssertTrue(document.renderModel.attributedText.string.contains(
+            "Image embed\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png"
+        ))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: document.renderModel.attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
+        let previewSize = firstAttachmentSize(in: document.renderModel.attributedText)
+        XCTAssertEqual(previewSize?.width ?? 0, 220, accuracy: 0.5)
+        XCTAssertGreaterThan(previewSize?.height ?? 0, 0)
+        XCTAssertEqual(blockKind(containing: "Embed: markprompt_interaction_prototype_v4.png", in: document), .paragraph)
+    }
+
+    func testRendersObsidianImageEmbedBoxDimensionsWithoutAliasText() {
+        let markdown = """
+        Boxed image ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|300x80]] keeps its target text.
+        """
+
+        let document = MarkdownParser().parse(markdown, fileURL: readerFixtureURL(named: "10_review_prd_mix.md"))
+        let renderedText = document.renderModel.renderedPlainText
+        let previewSize = firstAttachmentSize(in: document.renderModel.attributedText)
+
+        XCTAssertTrue(renderedText.contains("Embed: markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: ../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: 300x80"))
+        XCTAssertEqual(attachmentCount(in: document.renderModel.attributedText), 1)
+        XCTAssertLessThanOrEqual(previewSize?.width ?? 0, 300.5)
+        XCTAssertEqual(previewSize?.height ?? 0, 80, accuracy: 0.5)
+    }
+
+    func testSeparatesObsidianImageEmbedFallbackFromFollowingText() {
+        let markdown = """
+        Paragraph ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|120]] continues after media.
+        Punctuated ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|120]]. Next sentence.
+        """
+
+        let document = MarkdownParser().parse(markdown, fileURL: readerFixtureURL(named: "10_review_prd_mix.md"))
+        let attributedText = document.renderModel.attributedText.string
+
+        XCTAssertEqual(attachmentCount(in: document.renderModel.attributedText), 2)
+        XCTAssertTrue(attributedText.contains(
+            "Paragraph\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\ncontinues after media."
+        ))
+        XCTAssertTrue(attributedText.contains(
+            "Punctuated\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png.\nNext sentence."
+        ))
+        XCTAssertFalse(attributedText.contains("markprompt_interaction_prototype_v4.png continues"))
+        XCTAssertFalse(attributedText.contains("markprompt_interaction_prototype_v4.png. Next"))
+        XCTAssertFalse(attributedText.contains("../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+    }
+
+    func testRendersObsidianImageEmbedsInsideListsAndBlockquotes() {
+        let markdown = """
+        - Evidence item ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|180]] stays in the list.
+        > Quoted evidence ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|160]] stays in the quote.
+        """
+
+        let document = MarkdownParser().parse(markdown, fileURL: readerFixtureURL(named: "10_review_prd_mix.md"))
+        let renderedText = document.renderModel.renderedPlainText
+        let previewSizes = attachmentSizes(in: document.renderModel.attributedText)
+
+        XCTAssertTrue(renderedText.contains("Evidence item"))
+        XCTAssertTrue(renderedText.contains("Quoted evidence"))
+        XCTAssertEqual(attachmentCount(in: document.renderModel.attributedText), 2)
+        XCTAssertEqual(previewSizes.map(\.width), [180, 160])
+        XCTAssertTrue(document.renderModel.attributedText.string.contains(
+            "• Evidence item\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\nstays in the list."
+        ))
+        XCTAssertTrue(document.renderModel.attributedText.string.contains(
+            "Quoted evidence\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\nstays in the quote."
+        ))
+        XCTAssertFalse(renderedText.contains("Embed: 180"))
+        XCTAssertFalse(renderedText.contains("Embed: 160"))
+        XCTAssertFalse(renderedText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|180]]"))
+        XCTAssertFalse(renderedText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|160]]"))
+        XCTAssertEqual(blockKind(containing: "Evidence item", in: document), .unorderedList)
+        XCTAssertEqual(blockKind(containing: "Quoted evidence", in: document), .blockquote)
+    }
+
+    func testRendersObsidianImageEmbedsInsideDefinitionLists() {
+        let markdown = """
+        Evidence artifact
+        : Screenshot ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|150]] documents the review surface.
+        """
+
+        let document = MarkdownParser().parse(markdown, fileURL: readerFixtureURL(named: "02_lists_tasks.md"))
+        let renderedText = document.renderModel.renderedPlainText
+        let previewSizes = attachmentSizes(in: document.renderModel.attributedText)
+
+        XCTAssertTrue(renderedText.contains("Evidence artifact"))
+        XCTAssertTrue(renderedText.contains("Screenshot"))
+        XCTAssertTrue(renderedText.contains("Embed: markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: ../../../docs/assets/markprompt_interaction_prototype_v4.png"))
+        XCTAssertFalse(renderedText.contains("Embed: 150"))
+        XCTAssertFalse(renderedText.contains("![[../../../docs/assets/markprompt_interaction_prototype_v4.png|150]]"))
+        XCTAssertEqual(attachmentCount(in: document.renderModel.attributedText), 1)
+        XCTAssertEqual(previewSizes.map(\.width), [150])
+        XCTAssertTrue(document.renderModel.attributedText.string.contains(
+            "Screenshot\n\u{FFFC}\nEmbed: markprompt_interaction_prototype_v4.png\ndocuments the review surface."
+        ))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Embed: markprompt_interaction_prototype_v4.png", in: document.renderModel.attributedText) as? String,
+            "../../../docs/assets/markprompt_interaction_prototype_v4.png"
+        )
+        XCTAssertEqual(blockKind(containing: "Embed: markprompt_interaction_prototype_v4.png", in: document), .definitionList)
+    }
+
+    func testRendersObsidianFileEmbedsWithMediaTypeFallbacks() {
+        let markdown = """
+        Review packet ![[docs/assets/review-brief.pdf]] with call audio ![[captures/interview.m4a]] and prototype ![[demos/prototype.mov|prototype walkthrough]].
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributedText = document.renderModel.attributedText
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("PDF: review-brief.pdf"))
+        XCTAssertTrue(renderedText.contains("Audio: interview.m4a"))
+        XCTAssertTrue(renderedText.contains("Video: prototype walkthrough"))
+        XCTAssertFalse(renderedText.contains("Embed: docs/assets/review-brief.pdf"))
+        XCTAssertFalse(renderedText.contains("Embed: captures/interview.m4a"))
+        XCTAssertFalse(renderedText.contains("Embed: prototype walkthrough"))
+        XCTAssertFalse(renderedText.contains("docs/assets/review-brief.pdf"))
+        XCTAssertFalse(renderedText.contains("captures/interview.m4a"))
+        XCTAssertFalse(renderedText.contains("![[docs/assets/review-brief.pdf]]"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "PDF: review-brief.pdf", in: attributedText) as? String,
+            "docs/assets/review-brief.pdf"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Audio: interview.m4a", in: attributedText) as? String,
+            "captures/interview.m4a"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Video: prototype walkthrough", in: attributedText) as? String,
+            "demos/prototype.mov"
+        )
+        XCTAssertNotNil(attribute(.backgroundColor, for: "PDF: review-brief.pdf", in: attributedText))
+        XCTAssertEqual(blockKind(containing: "PDF: review-brief.pdf", in: document), .paragraph)
+    }
+
+    func testRendersObsidianNoteEmbedsAsReadablePlaceholders() {
+        let markdown = """
+        Embedded context ![[Reader Vault/Weekly Review.md#Retro]] and aliased note ![[Research/Prompt Notes|prompt notes]] plus plain note ![[Research/Review Appendix.md#Risks]] plus encoded note ![[Research/Review%20Appendix.md#Risk%20Map]] should stay concise.
+        """
+
+        let document = MarkdownParser().parse(markdown)
+        let attributedText = document.renderModel.attributedText
+        let renderedText = document.renderModel.renderedPlainText
+
+        XCTAssertTrue(renderedText.contains("Embedded context Note: Weekly Review#Retro and aliased note Note: prompt notes plus plain note Note: Review Appendix#Risks plus encoded note Note: Review Appendix#Risk Map should stay concise."))
+        XCTAssertFalse(renderedText.contains("Embed: Reader Vault/Weekly Review.md#Retro"))
+        XCTAssertFalse(renderedText.contains("Embed: prompt notes"))
+        XCTAssertFalse(renderedText.contains("Note: Weekly Review.md#Retro"))
+        XCTAssertFalse(renderedText.contains("Note: Review Appendix.md#Risks"))
+        XCTAssertFalse(renderedText.contains("Review%20Appendix"))
+        XCTAssertFalse(renderedText.contains("Risk%20Map"))
+        XCTAssertFalse(renderedText.contains("[[Reader Vault/Weekly Review.md#Retro]]"))
+        XCTAssertFalse(renderedText.contains("[[Research/Prompt Notes|prompt notes]]"))
+        XCTAssertFalse(renderedText.contains("[[Research/Review Appendix.md#Risks]]"))
+        XCTAssertFalse(renderedText.contains("[[Research/Review%20Appendix.md#Risk%20Map]]"))
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: Weekly Review#Retro", in: attributedText) as? String,
+            "Reader Vault/Weekly Review.md#Retro"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: prompt notes", in: attributedText) as? String,
+            "Research/Prompt Notes"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: Review Appendix#Risks", in: attributedText) as? String,
+            "Research/Review Appendix.md#Risks"
+        )
+        XCTAssertEqual(
+            attribute(.toolTip, for: "Note: Review Appendix#Risk Map", in: attributedText) as? String,
+            "Research/Review Appendix.md#Risk Map"
+        )
+        XCTAssertNotNil(attribute(.backgroundColor, for: "Note: Weekly Review#Retro", in: attributedText))
+        XCTAssertEqual(blockKind(containing: "Note: Weekly Review#Retro", in: document), .paragraph)
+    }
+
     func testParsesLargeMarkdownDocument() {
         let paragraph = "这是一段用于验证长文档解析和渲染稳定性的中文内容，包含产品目标、背景、约束和修改建议。"
         let body = (1...900)
@@ -654,6 +1245,17 @@ final class MarkdownParserTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("samples/markdown/sample_prd.md")
+    }
+
+    private func readerFixtureURL(named filename: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("samples/markdown/reader-fixtures")
+            .appendingPathComponent(filename)
     }
 
     private func containsNativeTextTable(in attributedText: NSAttributedString) -> Bool {
@@ -689,6 +1291,50 @@ final class MarkdownParserTests: XCTestCase {
         }
 
         return paragraph.textBlocks.isEmpty == false
+    }
+
+    private func attachmentCount(in attributedText: NSAttributedString) -> Int {
+        var count = 0
+        attributedText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributedText.length)
+        ) { value, _, _ in
+            if value is NSTextAttachment {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func firstAttachmentSize(in attributedText: NSAttributedString) -> NSSize? {
+        var size: NSSize?
+        attributedText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributedText.length)
+        ) { value, _, stop in
+            guard let attachment = value as? NSTextAttachment else {
+                return
+            }
+
+            size = attachment.bounds.size
+            stop.pointee = true
+        }
+        return size
+    }
+
+    private func attachmentSizes(in attributedText: NSAttributedString) -> [NSSize] {
+        var sizes: [NSSize] = []
+        attributedText.enumerateAttribute(
+            .attachment,
+            in: NSRange(location: 0, length: attributedText.length)
+        ) { value, _, _ in
+            guard let attachment = value as? NSTextAttachment else {
+                return
+            }
+
+            sizes.append(attachment.bounds.size)
+        }
+        return sizes
     }
 
     private func paragraphAlignment(
@@ -775,10 +1421,47 @@ final class MarkdownParserTests: XCTestCase {
         return NSFontManager.shared.traits(of: font).contains(.italicFontMask)
     }
 
+    private func hasFixedPitchFont(for needle: String, in attributedText: NSAttributedString) -> Bool {
+        let rendered = attributedText.string as NSString
+        let match = rendered.range(of: needle)
+        guard match.location != NSNotFound,
+              let font = attributedText.attribute(.font, at: match.location, effectiveRange: nil) as? NSFont
+        else {
+            return false
+        }
+
+        return NSFontManager.shared.traits(of: font).contains(.fixedPitchFontMask)
+    }
+
     private func hasDottedUnderline(for needle: String, in attributedText: NSAttributedString) -> Bool {
         guard let style = attribute(.underlineStyle, for: needle, in: attributedText) as? Int else {
             return false
         }
         return style & NSUnderlineStyle.patternDot.rawValue != 0
+    }
+
+    private func hasStrikethroughAttribute(for needle: String, in attributedText: NSAttributedString) -> Bool {
+        guard let style = attribute(.strikethroughStyle, for: needle, in: attributedText) as? Int else {
+            return false
+        }
+        return style & NSUnderlineStyle.single.rawValue != 0
+    }
+
+    private func taskMarkerSourceRange(for linePrefix: String, in attributedText: NSAttributedString) -> SourceTextRange? {
+        let rendered = attributedText.string as NSString
+        let match = rendered.range(of: linePrefix)
+        guard match.location != NSNotFound else {
+            return nil
+        }
+        return attributedText.attribute(NSAttributedString.Key("MarkPromptTaskMarkerSourceRange"), at: match.location, effectiveRange: nil) as? SourceTextRange
+    }
+
+    private func sourceRange(of needle: String, in source: String) -> SourceTextRange? {
+        let nsSource = source as NSString
+        let range = nsSource.range(of: needle)
+        guard range.location != NSNotFound else {
+            return nil
+        }
+        return SourceTextRange(lowerBound: range.location, upperBound: range.location + range.length)
     }
 }

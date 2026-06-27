@@ -17,6 +17,33 @@ public enum InspectorPanelMode: String, CaseIterable, Identifiable {
             return "Prompt"
         }
     }
+
+    public var help: String {
+        switch self {
+        case .annotations:
+            return "查看和编辑当前文档批注"
+        case .prompt:
+            return "预览由已选批注生成的 Prompt"
+        }
+    }
+
+    public var accessibilityLabel: String {
+        switch self {
+        case .annotations:
+            return "切换到批注面板"
+        case .prompt:
+            return "切换到 Prompt 面板"
+        }
+    }
+
+    public var accessibilityHint: String {
+        switch self {
+        case .annotations:
+            return "按 Return 显示批注列表和单条批注操作"
+        case .prompt:
+            return "按 Return 显示 Prompt 预览和批注摘要"
+        }
+    }
 }
 
 public enum SaveState: Equatable {
@@ -28,6 +55,8 @@ public enum SaveState: Equatable {
     case savedToFallback(String)
     case copied
     case copiedWithReviewFallback(String)
+    case historyCleaned(Int)
+    case historyCleared(Int)
     case promptSaved(String)
     case promptSavedToFallback(String)
     case promptSavedWithReviewFallback(promptPath: String, reviewPath: String)
@@ -52,6 +81,10 @@ public enum SaveState: Equatable {
             return "已复制"
         case let .copiedWithReviewFallback(path):
             return "Prompt 已复制；批注已保存到应用数据目录：\(path)"
+        case let .historyCleaned(count):
+            return "已从打开历史移除 \(count) 个失效项"
+        case let .historyCleared(count):
+            return "已清除 \(count) 项打开历史"
         case let .promptSaved(path):
             return "Prompt 已保存：\(path)"
         case let .promptSavedToFallback(path):
@@ -62,6 +95,15 @@ public enum SaveState: Equatable {
             return "Prompt 已保存到应用数据目录：\(promptPath)；批注已保存到应用数据目录：\(reviewPath)"
         case let .failed(message):
             return message
+        }
+    }
+
+    public var isTransientHistoryFeedback: Bool {
+        switch self {
+        case let .historyCleaned(count), let .historyCleared(count):
+            return count > 0
+        default:
+            return false
         }
     }
 }
@@ -177,6 +219,11 @@ public final class AppState: ObservableObject {
     private var autosaveTask: Task<Void, Never>?
     private var importGeneration = 0
     private var dismissedClipboardMarkdownPath: String?
+    private var taskMarkerUndoStack: [TaskMarkerUndo] = []
+
+    public var canUndoTaskMarkerToggle: Bool {
+        !taskMarkerUndoStack.isEmpty
+    }
 
     public init(
         documentLoader: DocumentLoader = DocumentLoader(),
@@ -242,8 +289,60 @@ public final class AppState: ObservableObject {
     }
 
     public func clearRecentDocuments() {
+        let clearedCount = recentDocumentURLs.count
+        guard clearedCount > 0 else {
+            return
+        }
+
         recentDocumentStore.clear()
         recentDocumentURLs = []
+        saveState = .historyCleared(clearedCount)
+    }
+
+    @discardableResult
+    public func removeMissingRecentDocuments() -> Int {
+        let missingURLs = recentDocumentURLs.filter { url in
+            FileManager.default.fileExists(atPath: url.path) == false
+        }
+        guard missingURLs.isEmpty == false else {
+            return 0
+        }
+
+        missingURLs.forEach(removeRecentDocument)
+        saveState = .historyCleaned(missingURLs.count)
+        return missingURLs.count
+    }
+
+    @discardableResult
+    public func removeUnavailableRecentDocuments() -> Int {
+        let unavailableURLs = recentDocumentURLs.filter { url in
+            FileManager.default.fileExists(atPath: url.path) == false || documentLoader.canLoadDocument(from: url) == false
+        }
+        guard unavailableURLs.isEmpty == false else {
+            return 0
+        }
+
+        unavailableURLs.forEach(removeRecentDocument)
+        saveState = .historyCleaned(unavailableURLs.count)
+        return unavailableURLs.count
+    }
+
+    @discardableResult
+    public func openRecentDocument(at url: URL) -> Bool {
+        let normalizedURL = url.standardizedFileURL
+        guard FileManager.default.fileExists(atPath: normalizedURL.path) else {
+            removeRecentDocument(normalizedURL)
+            saveState = .failed("打开历史中的文件不存在，已从历史移除：\(normalizedURL.lastPathComponent)")
+            return false
+        }
+
+        guard documentLoader.canLoadDocument(from: normalizedURL) else {
+            removeRecentDocument(normalizedURL)
+            saveState = .failed("打开历史中的文件不是 Markdown，已从历史移除：\(normalizedURL.lastPathComponent)")
+            return false
+        }
+
+        return openDocument(at: normalizedURL)
     }
 
     public func refreshClipboardMarkdownCandidate(pasteboard: NSPasteboard = .general) {
@@ -267,6 +366,33 @@ public final class AppState: ObservableObject {
     public func dismissClipboardMarkdownCandidate() {
         dismissedClipboardMarkdownPath = clipboardMarkdownCandidate?.url.standardizedFileURL.path
         clipboardMarkdownCandidate = nil
+    }
+
+    public func dismissTransientImportFailure() {
+        clearTransientImportFailure()
+    }
+
+    public func dismissTransientHistoryFeedback() {
+        guard saveState.isTransientHistoryFeedback else {
+            return
+        }
+
+        restoreNeutralSaveState()
+    }
+
+    @discardableResult
+    public func copyStatusMessageToPasteboard(
+        _ message: String,
+        pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedMessage.isEmpty == false else {
+            return false
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString(message, forType: .string)
+        return true
     }
 
     @discardableResult
@@ -378,6 +504,15 @@ public final class AppState: ObservableObject {
         return openDocumentWithoutFlushingAutosave(at: url)
     }
 
+    @discardableResult
+    public func reloadCurrentDocumentFromDisk() -> Bool {
+        guard let fileURL = currentDocument?.fileURL else {
+            return false
+        }
+
+        return openDocument(at: fileURL)
+    }
+
     private func openDocumentWithoutFlushingAutosave(at url: URL) -> Bool {
         do {
             let document = try documentLoader.loadDocument(from: url)
@@ -390,6 +525,7 @@ public final class AppState: ObservableObject {
             selectedNoteID = nil
             readerSelection = nil
             isAnnotationPopoverPresented = false
+            taskMarkerUndoStack.removeAll()
             scrollTargetHeadingID = topHeadingID
             scrollTargetRange = topHeadingID == nil ? RenderedTextRange(location: 0, length: 0) : nil
             currentReadingHeadingID = topHeadingID
@@ -409,6 +545,11 @@ public final class AppState: ObservableObject {
 
     private func recordRecentDocument(_ url: URL) {
         recentDocumentStore.recordOpenedDocument(at: url)
+        recentDocumentURLs = recentDocumentStore.recentDocumentURLs()
+    }
+
+    private func removeRecentDocument(_ url: URL) {
+        recentDocumentStore.removeOpenedDocument(at: url)
         recentDocumentURLs = recentDocumentStore.recentDocumentURLs()
     }
 
@@ -505,6 +646,147 @@ public final class AppState: ObservableObject {
         }
 
         updateSelection(selection)
+    }
+
+    @discardableResult
+    public func toggleTaskMarker(sourceRange: SourceTextRange) -> Bool {
+        guard let currentDocument,
+              let marker = taskMarker(at: sourceRange, in: currentDocument.rawMarkdown)
+        else {
+            return false
+        }
+
+        let markerCharacter = marker.dropFirst().dropLast()
+        let replacement = markerCharacter == " " ? "x" : " "
+        return setTaskMarker(sourceRange: sourceRange, markerCharacter: String(replacement))
+    }
+
+    @discardableResult
+    public func setTaskMarker(sourceRange: SourceTextRange, markerCharacter: String) -> Bool {
+        guard let currentDocument,
+              let fileURL = currentDocument.fileURL,
+              sourceRange.length == 3,
+              (markerCharacter as NSString).length == 1
+        else {
+            return false
+        }
+
+        guard let marker = taskMarker(at: sourceRange, in: currentDocument.rawMarkdown) else {
+            return false
+        }
+        let markerRange = NSRange(location: sourceRange.lowerBound, length: sourceRange.length)
+        let replacement = "[\(markerCharacter)]"
+        guard marker != replacement else {
+            return false
+        }
+        let visibleHeadingReference = visibleHeadingReference(in: currentDocument)
+        let undo = TaskMarkerUndo(
+            documentID: currentDocument.id,
+            fileURL: fileURL,
+            rawMarkdown: currentDocument.rawMarkdown,
+            visibleHeadingReference: visibleHeadingReference
+        )
+        let updatedSource = NSMutableString(string: currentDocument.rawMarkdown)
+        updatedSource.replaceCharacters(in: markerRange, with: replacement)
+        let updatedMarkdown = updatedSource as String
+
+        do {
+            let onDiskMarkdown = try String(contentsOf: fileURL, encoding: .utf8)
+            guard onDiskMarkdown == currentDocument.rawMarkdown else {
+                saveState = .failed(taskMarkerExternalModificationMessage(
+                    action: "切换",
+                    openedMarkdown: currentDocument.rawMarkdown,
+                    onDiskMarkdown: onDiskMarkdown
+                ))
+                return false
+            }
+
+            try updatedMarkdown.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            saveState = .failed("任务状态保存失败：\(error.localizedDescription)")
+            return false
+        }
+
+        applyTaskMarkerMarkdown(
+            updatedMarkdown,
+            fileURL: fileURL,
+            documentID: currentDocument.id,
+            visibleHeadingReference: visibleHeadingReference
+        )
+        taskMarkerUndoStack.append(undo)
+        return true
+    }
+
+    private func taskMarker(at sourceRange: SourceTextRange, in rawMarkdown: String) -> String? {
+        guard sourceRange.length == 3 else {
+            return nil
+        }
+
+        let source = rawMarkdown as NSString
+        guard sourceRange.lowerBound >= 0,
+              sourceRange.upperBound <= source.length
+        else {
+            return nil
+        }
+
+        let marker = source.substring(with: NSRange(location: sourceRange.lowerBound, length: sourceRange.length))
+        guard marker.hasPrefix("["),
+              marker.hasSuffix("]"),
+              marker.count == 3
+        else {
+            return nil
+        }
+
+        return marker
+    }
+
+    @discardableResult
+    public func undoLastTaskMarkerToggle() -> Bool {
+        guard let undo = taskMarkerUndoStack.last,
+              let currentDocument,
+              currentDocument.id == undo.documentID,
+              currentDocument.fileURL == undo.fileURL
+        else {
+            return false
+        }
+
+        do {
+            let onDiskMarkdown = try String(contentsOf: undo.fileURL, encoding: .utf8)
+            guard onDiskMarkdown == currentDocument.rawMarkdown else {
+                saveState = .failed(taskMarkerExternalModificationMessage(
+                    action: "撤销",
+                    openedMarkdown: currentDocument.rawMarkdown,
+                    onDiskMarkdown: onDiskMarkdown
+                ))
+                return false
+            }
+
+            try undo.rawMarkdown.write(to: undo.fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            saveState = .failed("任务状态保存失败：\(error.localizedDescription)")
+            return false
+        }
+
+        applyTaskMarkerMarkdown(
+            undo.rawMarkdown,
+            fileURL: undo.fileURL,
+            documentID: undo.documentID,
+            visibleHeadingReference: undo.visibleHeadingReference
+        )
+        taskMarkerUndoStack.removeLast()
+        return true
+    }
+
+    private func taskMarkerExternalModificationMessage(
+        action: String,
+        openedMarkdown: String,
+        onDiskMarkdown: String
+    ) -> String {
+        let summary = MarkdownLineChangeSummary.summary(
+            openedMarkdown: openedMarkdown,
+            onDiskMarkdown: onDiskMarkdown
+        )
+        return "任务状态保存失败：文件已在外部修改（\(summary)），请先重新载入后再\(action)任务状态。"
     }
 
     public func clearScrollTargets() {
@@ -1053,6 +1335,93 @@ public final class AppState: ObservableObject {
         currentDocument?.outline.flattened().contains { $0.id == headingID } == true
     }
 
+    private struct TaskMarkerUndo {
+        var documentID: UUID
+        var fileURL: URL
+        var rawMarkdown: String
+        var visibleHeadingReference: VisibleHeadingReference?
+    }
+
+    private struct VisibleHeadingReference {
+        var sourceRange: SourceTextRange
+        var path: [String]
+    }
+
+    private func applyTaskMarkerMarkdown(
+        _ markdown: String,
+        fileURL: URL,
+        documentID: UUID,
+        visibleHeadingReference: VisibleHeadingReference?
+    ) {
+        let parsed = MarkdownParser().parse(markdown, fileURL: fileURL)
+        let updatedDocument = MarkdownDocument(
+            id: documentID,
+            fileURL: parsed.fileURL,
+            displayName: parsed.displayName,
+            rawMarkdown: parsed.rawMarkdown,
+            sourceHash: parsed.sourceHash,
+            outline: parsed.outline,
+            renderModel: parsed.renderModel
+        )
+
+        currentDocument = updatedDocument
+        if let reviewSession {
+            self.reviewSession = resolvedReviewSession(reviewSession, for: updatedDocument)
+        }
+        readerSelection = nil
+        isAnnotationPopoverPresented = false
+        scrollTargetHeadingID = nil
+        scrollTargetRange = nil
+        currentReadingHeadingID = restoredHeadingID(
+            in: updatedDocument.outline,
+            from: visibleHeadingReference
+        ) ?? updatedDocument.outline.flattened().first?.id
+        saveState = .saved
+        refreshPromptPreview()
+    }
+
+    private func visibleHeadingReference(in document: MarkdownDocument) -> VisibleHeadingReference? {
+        guard let currentReadingHeadingID,
+              let heading = document.outline.flattened().first(where: { $0.id == currentReadingHeadingID })
+        else {
+            return nil
+        }
+
+        return VisibleHeadingReference(
+            sourceRange: heading.sourceRange,
+            path: document.outline.headingPath(to: currentReadingHeadingID) ?? [heading.title]
+        )
+    }
+
+    private func restoredHeadingID(
+        in outline: [DocumentHeading],
+        from reference: VisibleHeadingReference?
+    ) -> UUID? {
+        guard let reference else {
+            return nil
+        }
+
+        if let sourceRangeMatch = outline.flattened().first(where: { $0.sourceRange == reference.sourceRange }) {
+            return sourceRangeMatch.id
+        }
+
+        return headingID(in: outline, matchingPath: reference.path)
+    }
+
+    private func headingID(in outline: [DocumentHeading], matchingPath path: [String]) -> UUID? {
+        guard let firstTitle = path.first,
+              let heading = outline.first(where: { $0.title == firstTitle })
+        else {
+            return nil
+        }
+
+        if path.count == 1 {
+            return heading.id
+        }
+
+        return headingID(in: heading.children, matchingPath: Array(path.dropFirst()))
+    }
+
     private static func rangesOverlap(_ first: RenderedTextRange, _ second: RenderedTextRange) -> Bool {
         first.location < second.upperBound && second.location < first.upperBound
     }
@@ -1084,6 +1453,49 @@ public final class AppState: ObservableObject {
                 self.saveState = sidecarLoadWarningState
             }
         }
+    }
+}
+
+private enum MarkdownLineChangeSummary {
+    static func summary(openedMarkdown: String, onDiskMarkdown: String) -> String {
+        let openedLines = normalizedLines(openedMarkdown)
+        let onDiskLines = normalizedLines(onDiskMarkdown)
+        let sharedPrefixCount = zip(openedLines, onDiskLines).prefix { $0 == $1 }.count
+        var sharedSuffixCount = 0
+        while sharedPrefixCount + sharedSuffixCount < openedLines.count,
+              sharedPrefixCount + sharedSuffixCount < onDiskLines.count,
+              openedLines[openedLines.count - 1 - sharedSuffixCount] == onDiskLines[onDiskLines.count - 1 - sharedSuffixCount] {
+            sharedSuffixCount += 1
+        }
+
+        let removedCount = openedLines.count - sharedPrefixCount - sharedSuffixCount
+        let addedCount = onDiskLines.count - sharedPrefixCount - sharedSuffixCount
+        let modifiedCount = min(addedCount, removedCount)
+        let netAddedCount = addedCount - modifiedCount
+        let netRemovedCount = removedCount - modifiedCount
+        var parts: [String] = []
+        if modifiedCount > 0 {
+            parts.append("外部版本修改 \(modifiedCount) 行")
+        }
+        if netAddedCount > 0 {
+            parts.append("外部版本新增 \(netAddedCount) 行")
+        }
+        if netRemovedCount > 0 {
+            parts.append("外部版本移除 \(netRemovedCount) 行")
+        }
+        guard !parts.isEmpty else {
+            return "内容已变化"
+        }
+
+        return "第 \(sharedPrefixCount + 1) 行起，\(parts.joined(separator: "、"))"
+    }
+
+    private static func normalizedLines(_ markdown: String) -> [Substring] {
+        var lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.last == "" {
+            lines.removeLast()
+        }
+        return lines
     }
 }
 

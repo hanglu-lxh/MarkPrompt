@@ -110,6 +110,16 @@ public enum MarkdownReaderLayoutMetrics {
             hasher.combine("baseline")
             hasher.combine(String(describing: baselineOffset))
         }
+
+        if let taskMarkerSourceRange = attributes[.markPromptTaskMarkerSourceRange] as? SourceTextRange {
+            hasher.combine("taskMarkerSourceRange")
+            hasher.combine(taskMarkerSourceRange.lowerBound)
+            hasher.combine(taskMarkerSourceRange.upperBound)
+        }
+        if let taskMarkerCharacter = attributes[.markPromptTaskMarkerCharacter] as? String {
+            hasher.combine("taskMarkerCharacter")
+            hasher.combine(taskMarkerCharacter)
+        }
     }
 
     private static func signature(textBlock: NSTextBlock, into hasher: inout Hasher) {
@@ -149,9 +159,9 @@ public enum MarkdownReaderLayoutMetrics {
     public static func annotationButtonRect(
         forVisibleSelectionRect selectionRect: CGRect,
         viewportSize: CGSize,
-        buttonSize: CGSize = CGSize(width: 72, height: 44),
+        buttonSize: CGSize = CGSize(width: 84, height: 36),
         margin: CGFloat = 12,
-        gap: CGFloat = 10
+        gap: CGFloat = 8
     ) -> CGRect? {
         guard viewportSize.width > 0,
               viewportSize.height > 0,
@@ -163,6 +173,17 @@ public enum MarkdownReaderLayoutMetrics {
 
         let maximumX = max(margin, viewportSize.width - buttonSize.width - margin)
         let maximumY = max(margin, viewportSize.height - buttonSize.height - margin)
+        let centeredY = min(maximumY, max(margin, selectionRect.midY - buttonSize.height / 2))
+        let rightSideX = selectionRect.maxX + gap
+        if rightSideX <= maximumX {
+            return CGRect(origin: CGPoint(x: rightSideX, y: centeredY), size: buttonSize)
+        }
+
+        let leftSideX = selectionRect.minX - buttonSize.width - gap
+        if leftSideX >= margin {
+            return CGRect(origin: CGPoint(x: leftSideX, y: centeredY), size: buttonSize)
+        }
+
         let preferredX = selectionRect.midX - buttonSize.width / 2
         let aboveY = selectionRect.minY - buttonSize.height - gap
         let belowY = selectionRect.maxY + gap
@@ -220,12 +241,16 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
     public var highlights: [AnnotationHighlight]
     public var annotationButtonRect: CGRect?
     public var isAnnotationButtonActive: Bool
+    public var annotationCursorState: ReaderAnnotationCursorState
     public var scrollTargetHeadingID: UUID?
     public var scrollTargetRange: RenderedTextRange?
     public var onAnnotationButtonPress: () -> Void
     public var onSelectionChange: (ReaderSelection?) -> Void
     public var onScrollTargetConsumed: (UUID?, RenderedTextRange?) -> Void
     public var onVisibleHeadingChange: (UUID?) -> Void
+    public var onTaskMarkerToggle: (SourceTextRange) -> Bool
+    public var onTaskMarkerStatusChange: (SourceTextRange, String) -> Bool
+    public var onTaskMarkerUndo: () -> Bool
 
     public init(
         attributedText: NSAttributedString,
@@ -233,24 +258,32 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         highlights: [AnnotationHighlight],
         annotationButtonRect: CGRect? = nil,
         isAnnotationButtonActive: Bool = false,
+        annotationCursorState: ReaderAnnotationCursorState = .textSelection,
         scrollTargetHeadingID: UUID?,
         scrollTargetRange: RenderedTextRange?,
         onAnnotationButtonPress: @escaping () -> Void = {},
         onSelectionChange: @escaping (ReaderSelection?) -> Void,
         onScrollTargetConsumed: @escaping (UUID?, RenderedTextRange?) -> Void = { _, _ in },
-        onVisibleHeadingChange: @escaping (UUID?) -> Void = { _ in }
+        onVisibleHeadingChange: @escaping (UUID?) -> Void = { _ in },
+        onTaskMarkerToggle: @escaping (SourceTextRange) -> Bool = { _ in false },
+        onTaskMarkerStatusChange: @escaping (SourceTextRange, String) -> Bool = { _, _ in false },
+        onTaskMarkerUndo: @escaping () -> Bool = { false }
     ) {
         self.attributedText = attributedText
         self.sourceMap = sourceMap
         self.highlights = highlights
         self.annotationButtonRect = annotationButtonRect
         self.isAnnotationButtonActive = isAnnotationButtonActive
+        self.annotationCursorState = annotationCursorState
         self.scrollTargetHeadingID = scrollTargetHeadingID
         self.scrollTargetRange = scrollTargetRange
         self.onAnnotationButtonPress = onAnnotationButtonPress
         self.onSelectionChange = onSelectionChange
         self.onScrollTargetConsumed = onScrollTargetConsumed
         self.onVisibleHeadingChange = onVisibleHeadingChange
+        self.onTaskMarkerToggle = onTaskMarkerToggle
+        self.onTaskMarkerStatusChange = onTaskMarkerStatusChange
+        self.onTaskMarkerUndo = onTaskMarkerUndo
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -275,6 +308,9 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
 
         let textView = ReaderTextView(frame: NSRect(origin: .zero, size: initialSize), textContainer: textContainer)
         textView.delegate = context.coordinator
+        textView.onTaskMarkerClick = { _ in false }
+        textView.onTaskMarkerStatusChange = { _, _ in false }
+        textView.onTaskMarkerUndo = { false }
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -297,6 +333,10 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onVisibleHeadingChange = onVisibleHeadingChange
         context.coordinator.onAnnotationButtonPress = onAnnotationButtonPress
+        textView.annotationCursorState = annotationCursorState
+        textView.onTaskMarkerClick = onTaskMarkerToggle
+        textView.onTaskMarkerStatusChange = onTaskMarkerStatusChange
+        textView.onTaskMarkerUndo = onTaskMarkerUndo
         context.coordinator.sourceMap = sourceMap
         context.coordinator.updateAnnotationButton(
             in: scrollView,
@@ -328,11 +368,14 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
 
         if isRenderChanged || isWidthChanged {
             updateTextViewLayout(textView, in: scrollView, contentWidth: contentWidth)
+            textView.invalidateTaskMarkerCursorRects()
             context.coordinator.lastLayoutWidth = contentWidth
 
             if !hasExplicitScrollTarget {
                 restoreScrollPosition(in: scrollView, to: preservedScrollOrigin)
             }
+        } else if isHighlightChanged {
+            textView.invalidateTaskMarkerCursorRects()
         }
         if isRenderChanged || isWidthChanged {
             context.coordinator.emitVisibleHeading(from: scrollView)
@@ -496,13 +539,13 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         }
 
         private func makeAnnotationButton() -> AnnotationButton {
-            let button = AnnotationButton(title: "批注", target: nil, action: nil)
+            let button = AnnotationButton(title: "批注 +", target: nil, action: nil)
             button.image = nil
             button.isBordered = false
             button.controlSize = .small
             button.setButtonType(.momentaryPushIn)
             button.focusRingType = .none
-            button.setAccessibilityLabel("批注")
+            button.setAccessibilityLabel("添加批注")
             button.toolTip = "添加批注"
             button.wantsLayer = true
             annotationButton = button
@@ -682,35 +725,188 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
     }
 }
 
+public struct AnnotationEntryButtonPresentation: Equatable, Sendable {
+    public var title: String
+    public var help: String
+    public var accessibilityLabel: String
+    public var accessibilityHelp: String
+    public var backgroundAlpha: Double
+    public var borderWidth: Double
+    public var shadowOpacity: Double
+    public var shadowRadius: Double
+    public var shadowYOffset: Double
+
+    public init(
+        title: String,
+        help: String,
+        accessibilityLabel: String,
+        accessibilityHelp: String,
+        backgroundAlpha: Double,
+        borderWidth: Double,
+        shadowOpacity: Double,
+        shadowRadius: Double,
+        shadowYOffset: Double
+    ) {
+        self.title = title
+        self.help = help
+        self.accessibilityLabel = accessibilityLabel
+        self.accessibilityHelp = accessibilityHelp
+        self.backgroundAlpha = backgroundAlpha
+        self.borderWidth = borderWidth
+        self.shadowOpacity = shadowOpacity
+        self.shadowRadius = shadowRadius
+        self.shadowYOffset = shadowYOffset
+    }
+
+    public static func presentation(
+        isActive: Bool,
+        isHovered: Bool,
+        isPressed: Bool
+    ) -> AnnotationEntryButtonPresentation {
+        if isActive {
+            return AnnotationEntryButtonPresentation(
+                title: "批注 +",
+                help: "批注输入框已打开",
+                accessibilityLabel: "批注输入框已打开",
+                accessibilityHelp: "输入意见后按 ⌘↩ 保存，按 Esc 取消",
+                backgroundAlpha: 0.14,
+                borderWidth: 1.2,
+                shadowOpacity: 0.22,
+                shadowRadius: 12,
+                shadowYOffset: 4
+            )
+        }
+
+        if isPressed {
+            return AnnotationEntryButtonPresentation(
+                title: "批注 +",
+                help: "正在打开批注输入框",
+                accessibilityLabel: "正在打开批注输入框",
+                accessibilityHelp: "松开后会打开批注输入框；会保留当前选区",
+                backgroundAlpha: 0.18,
+                borderWidth: 1.3,
+                shadowOpacity: 0.2,
+                shadowRadius: 12,
+                shadowYOffset: 4
+            )
+        }
+
+        if isHovered {
+            return AnnotationEntryButtonPresentation(
+                title: "批注 +",
+                help: "点击为当前选区添加批注",
+                accessibilityLabel: "为选区添加批注",
+                accessibilityHelp: "按 Return 打开批注输入框；会保留当前选区",
+                backgroundAlpha: 0.08,
+                borderWidth: 1.1,
+                shadowOpacity: 0.18,
+                shadowRadius: 11,
+                shadowYOffset: 4
+            )
+        }
+
+        return AnnotationEntryButtonPresentation(
+            title: "批注 +",
+            help: "为当前选区添加批注",
+            accessibilityLabel: "为选区添加批注",
+            accessibilityHelp: "按 Return 打开批注输入框；会保留当前选区",
+            backgroundAlpha: 0,
+            borderWidth: 1,
+            shadowOpacity: 0.14,
+            shadowRadius: 9,
+            shadowYOffset: 3
+        )
+    }
+}
+
 private final class AnnotationButton: NSButton {
     var onPress: () -> Void = {}
+    private var isActiveAppearance = false
+    private var isHovering = false
+    private var hoverTrackingArea: NSTrackingArea?
 
     func applyAppearance(isActive: Bool) {
+        isActiveAppearance = isActive
+        updateAppearance()
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            updateAppearance()
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        updateAppearance()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
         wantsLayer = true
+        let presentation = AnnotationEntryButtonPresentation.presentation(
+            isActive: isActiveAppearance,
+            isHovered: isHovering,
+            isPressed: isHighlighted
+        )
+        let isInteractive = isActiveAppearance || isHovering || isHighlighted
         let foregroundColor = NSColor.systemOrange
-        let backgroundColor = NSColor.textBackgroundColor
-        let borderColor = isActive ? NSColor.systemOrange : NSColor.separatorColor
+        let backgroundColor = presentation.backgroundAlpha > 0
+            ? NSColor.systemOrange.withAlphaComponent(presentation.backgroundAlpha)
+            : NSColor.textBackgroundColor
+        let borderColor = isInteractive ? NSColor.systemOrange : NSColor.separatorColor
 
         attributedTitle = NSAttributedString(
-            string: "批注",
+            string: presentation.title,
             attributes: [
                 .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
                 .foregroundColor: foregroundColor
             ]
         )
         contentTintColor = foregroundColor
+        toolTip = presentation.help
+        setAccessibilityLabel(presentation.accessibilityLabel)
+        setAccessibilityHelp(presentation.accessibilityHelp)
         layer?.cornerRadius = 8
-        layer?.borderWidth = isActive ? 1.2 : 1
+        layer?.borderWidth = presentation.borderWidth
         layer?.borderColor = borderColor.cgColor
         layer?.backgroundColor = backgroundColor.cgColor
         layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = isActive ? 0.2 : 0.14
-        layer?.shadowRadius = isActive ? 12 : 9
-        layer?.shadowOffset = CGSize(width: 0, height: 3)
+        layer?.shadowOpacity = Float(presentation.shadowOpacity)
+        layer?.shadowRadius = presentation.shadowRadius
+        layer?.shadowOffset = CGSize(width: 0, height: presentation.shadowYOffset)
         layer?.masksToBounds = false
     }
 
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
     override func mouseDown(with event: NSEvent) {
+        isHighlighted = true
+        defer {
+            isHighlighted = false
+        }
         onPress()
     }
 

@@ -24,3 +24,9 @@
 |---|---|
 | Status | Expected to render as a native TextKit table |
 | Risk | Selection &amp; anchor mapping must still work |
+
+## Evidence Table
+
+| Evidence | Preview | Status |
+|---|---|---|
+| Screenshot | ![[../../../docs/assets/markprompt_interaction_prototype_v4.png|140]] | Ready for annotation |

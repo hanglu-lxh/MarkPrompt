@@ -6,6 +6,356 @@ import XCTest
 
 @MainActor
 final class AppStateFlowTests: XCTestCase {
+    func testTogglingTaskMarkerUpdatesMarkdownFileAndReaderModel() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        - [x] Confirm local-first behavior
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let originalDocument = try XCTUnwrap(state.currentDocument)
+        let openMarkerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: originalDocument.rawMarkdown))
+
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: openMarkerRange))
+
+        let toggledDocument = try XCTUnwrap(state.currentDocument)
+        XCTAssertTrue(toggledDocument.rawMarkdown.contains("- [x] Review anchor recovery"))
+        XCTAssertTrue(toggledDocument.renderModel.renderedPlainText.contains("☑ Review anchor recovery"))
+        XCTAssertTrue(toggledDocument.renderModel.renderedPlainText.contains("☑ Confirm local-first behavior"))
+        XCTAssertNotEqual(toggledDocument.sourceHash, originalDocument.sourceHash)
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), toggledDocument.rawMarkdown)
+        XCTAssertEqual(state.saveState, .saved)
+
+        let completedMarkerRange = try XCTUnwrap(sourceRange(of: "[x] Review", in: toggledDocument.rawMarkdown))
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: SourceTextRange(
+            lowerBound: completedMarkerRange.lowerBound,
+            upperBound: completedMarkerRange.lowerBound + 3
+        )))
+
+        let reopenedDocument = try XCTUnwrap(state.currentDocument)
+        XCTAssertTrue(reopenedDocument.rawMarkdown.contains("- [ ] Review anchor recovery"))
+        XCTAssertTrue(reopenedDocument.renderModel.renderedPlainText.contains("☐ Review anchor recovery"))
+    }
+
+    func testUndoingTaskMarkerToggleRestoresMarkdownFileAndReaderModel() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        XCTAssertFalse(state.canUndoTaskMarkerToggle)
+        let originalDocumentID = try XCTUnwrap(state.currentDocument?.id)
+        let openMarkerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: source))
+
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: openMarkerRange))
+        XCTAssertTrue(state.canUndoTaskMarkerToggle)
+        XCTAssertTrue(try String(contentsOf: sourceURL, encoding: .utf8).contains("- [x] Review anchor recovery"))
+
+        XCTAssertTrue(state.undoLastTaskMarkerToggle())
+
+        let restoredDocument = try XCTUnwrap(state.currentDocument)
+        XCTAssertEqual(restoredDocument.id, originalDocumentID)
+        XCTAssertEqual(restoredDocument.rawMarkdown, source)
+        XCTAssertTrue(restoredDocument.renderModel.renderedPlainText.contains("☐ Review anchor recovery"))
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), source)
+        XCTAssertEqual(state.saveState, .saved)
+        XCTAssertFalse(state.canUndoTaskMarkerToggle)
+        XCTAssertFalse(state.undoLastTaskMarkerToggle())
+    }
+
+    func testUndoingTaskMarkerTogglesWalksBackMultipleMarkdownWrites() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        - [ ] Confirm local-first behavior
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+
+        let firstMarkerRange = try XCTUnwrap(sourceRange(of: "[ ] Review", in: source))
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: SourceTextRange(
+            lowerBound: firstMarkerRange.lowerBound,
+            upperBound: firstMarkerRange.lowerBound + 3
+        )))
+
+        let firstToggledMarkdown = try XCTUnwrap(state.currentDocument?.rawMarkdown)
+        XCTAssertTrue(firstToggledMarkdown.contains("- [x] Review anchor recovery"))
+        XCTAssertTrue(firstToggledMarkdown.contains("- [ ] Confirm local-first behavior"))
+
+        let secondMarkerRange = try XCTUnwrap(sourceRange(of: "[ ] Confirm", in: firstToggledMarkdown))
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: SourceTextRange(
+            lowerBound: secondMarkerRange.lowerBound,
+            upperBound: secondMarkerRange.lowerBound + 3
+        )))
+
+        XCTAssertTrue(try String(contentsOf: sourceURL, encoding: .utf8).contains("- [x] Confirm local-first behavior"))
+
+        XCTAssertTrue(state.undoLastTaskMarkerToggle())
+        XCTAssertEqual(state.currentDocument?.rawMarkdown, firstToggledMarkdown)
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), firstToggledMarkdown)
+        XCTAssertTrue(state.canUndoTaskMarkerToggle)
+
+        XCTAssertTrue(state.undoLastTaskMarkerToggle())
+        XCTAssertEqual(state.currentDocument?.rawMarkdown, source)
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), source)
+        XCTAssertFalse(state.canUndoTaskMarkerToggle)
+    }
+
+    func testUndoingTaskMarkerToggleReportsExternalModificationSummary() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        """
+        let externallyModifiedAfterToggle = """
+        # Tasks
+
+        - [x] Review anchor recovery
+        - [ ] Preserve external reviewer note
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let markerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: source))
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: markerRange))
+        try externallyModifiedAfterToggle.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        XCTAssertFalse(state.undoLastTaskMarkerToggle())
+        XCTAssertTrue(state.canUndoTaskMarkerToggle)
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), externallyModifiedAfterToggle)
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: state.saveState,
+                hasOpenDocument: state.currentDocument != nil
+            ),
+            ReaderStatusBannerPresentation(
+                title: "保存未完成",
+                message: "任务状态保存失败：文件已在外部修改（第 4 行起，外部版本新增 1 行），请先重新载入后再撤销任务状态。当前文档仍保持打开。",
+                systemImage: "exclamationmark.triangle",
+                actionTitle: "重新载入文件",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整失败详情；不会隐藏保存失败",
+                copyValue: "任务状态保存失败：文件已在外部修改（第 4 行起，外部版本新增 1 行），请先重新载入后再撤销任务状态。当前文档仍保持打开。"
+            )
+        )
+    }
+
+    func testSettingTaskMarkerStatusUpdatesMarkdownFileAndReaderModel() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let markerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: source))
+
+        XCTAssertTrue(state.setTaskMarker(sourceRange: markerRange, markerCharacter: "/"))
+
+        let updatedDocument = try XCTUnwrap(state.currentDocument)
+        XCTAssertTrue(updatedDocument.rawMarkdown.contains("- [/] Review anchor recovery"))
+        XCTAssertTrue(updatedDocument.renderModel.renderedPlainText.contains("◩ Review anchor recovery"))
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), updatedDocument.rawMarkdown)
+        XCTAssertTrue(state.canUndoTaskMarkerToggle)
+
+        XCTAssertTrue(state.undoLastTaskMarkerToggle())
+        XCTAssertEqual(state.currentDocument?.rawMarkdown, source)
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), source)
+    }
+
+    func testTogglingInvalidTaskMarkerRangeLeavesDocumentUnchanged() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        XCTAssertFalse(state.toggleTaskMarker(sourceRange: SourceTextRange(lowerBound: 0, upperBound: 3)))
+        XCTAssertEqual(state.currentDocument?.rawMarkdown, source)
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), source)
+    }
+
+    func testTogglingTaskMarkerPreservesVisibleHeading() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+
+        ## Later
+
+        Preserve the current outline position.
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let document = try XCTUnwrap(state.currentDocument)
+        let visibleHeadingID = try XCTUnwrap(document.outline.flattened().first { $0.title == "Later" }?.id)
+        state.updateVisibleHeading(visibleHeadingID, from: document.id)
+
+        let openMarkerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: document.rawMarkdown))
+        XCTAssertTrue(state.toggleTaskMarker(sourceRange: openMarkerRange))
+
+        let updatedDocument = try XCTUnwrap(state.currentDocument)
+        let updatedVisibleHeadingID = try XCTUnwrap(updatedDocument.outline.flattened().first { $0.title == "Later" }?.id)
+        XCTAssertEqual(state.currentReadingHeadingID, updatedVisibleHeadingID)
+    }
+
+    func testTogglingTaskMarkerDoesNotOverwriteExternallyModifiedMarkdown() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        """
+        let externalSource = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        - [ ] Preserve external reviewer note
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let document = try XCTUnwrap(state.currentDocument)
+        let markerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: document.rawMarkdown))
+        try externalSource.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        XCTAssertFalse(state.toggleTaskMarker(sourceRange: markerRange))
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), externalSource)
+        XCTAssertEqual(state.currentDocument?.rawMarkdown, source)
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: state.saveState,
+                hasOpenDocument: state.currentDocument != nil
+            ),
+            ReaderStatusBannerPresentation(
+                title: "保存未完成",
+                message: "任务状态保存失败：文件已在外部修改（第 4 行起，外部版本新增 1 行），请先重新载入后再切换任务状态。当前文档仍保持打开。",
+                systemImage: "exclamationmark.triangle",
+                actionTitle: "重新载入文件",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整失败详情；不会隐藏保存失败",
+                copyValue: "任务状态保存失败：文件已在外部修改（第 4 行起，外部版本新增 1 行），请先重新载入后再切换任务状态。当前文档仍保持打开。"
+            )
+        )
+
+        XCTAssertTrue(state.reloadCurrentDocumentFromDisk())
+        XCTAssertEqual(state.currentDocument?.rawMarkdown, externalSource)
+        XCTAssertTrue(state.currentDocument?.renderModel.renderedPlainText.contains("☐ Preserve external reviewer note") == true)
+        XCTAssertEqual(state.saveState, .loaded)
+        XCTAssertFalse(state.canUndoTaskMarkerToggle)
+    }
+
+    func testTogglingTaskMarkerReportsExternalModificationChangedLineSummary() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let source = """
+        # Tasks
+
+        - [ ] Review anchor recovery
+        """
+        let externalSource = """
+        # Tasks
+
+        - [ ] Review anchor recovery with reviewer context
+        """
+        let sourceURL = temp.appendingPathComponent("tasks.md")
+        try source.write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let document = try XCTUnwrap(state.currentDocument)
+        let markerRange = try XCTUnwrap(sourceRange(of: "[ ]", in: document.rawMarkdown))
+        try externalSource.write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        XCTAssertFalse(state.toggleTaskMarker(sourceRange: markerRange))
+        XCTAssertEqual(try String(contentsOf: sourceURL, encoding: .utf8), externalSource)
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: state.saveState,
+                hasOpenDocument: state.currentDocument != nil
+            ),
+            ReaderStatusBannerPresentation(
+                title: "保存未完成",
+                message: "任务状态保存失败：文件已在外部修改（第 3 行起，外部版本修改 1 行），请先重新载入后再切换任务状态。当前文档仍保持打开。",
+                systemImage: "exclamationmark.triangle",
+                actionTitle: "重新载入文件",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整失败详情；不会隐藏保存失败",
+                copyValue: "任务状态保存失败：文件已在外部修改（第 3 行起，外部版本修改 1 行），请先重新载入后再切换任务状态。当前文档仍保持打开。"
+            )
+        )
+    }
+
     func testOpenAnnotateSaveRestoreEditExcludeDeleteAndSavePrompt() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -919,22 +1269,111 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertNil(AnnotationActionStatusPresentation.presentation(for: state.saveState))
     }
 
-    func testAnnotationPanelScrollBehaviorTargetsOnlyVisibleSelectedNotes() {
+    func testAnnotationPanelScrollBehaviorTargetsOnlyAvailableSelectedNotes() {
         XCTAssertEqual(
             AnnotationPanelScrollBehavior.targetNoteID(
                 selectedNoteID: "note_002",
-                visibleNoteIDs: ["note_001", "note_002", "note_003"]
+                availableNoteIDs: ["note_001", "note_002", "note_003"]
             ),
             "note_002"
         )
         XCTAssertNil(AnnotationPanelScrollBehavior.targetNoteID(
             selectedNoteID: "note_004",
-            visibleNoteIDs: ["note_001", "note_002", "note_003"]
+            availableNoteIDs: ["note_001", "note_002", "note_003"]
         ))
         XCTAssertNil(AnnotationPanelScrollBehavior.targetNoteID(
             selectedNoteID: nil,
-            visibleNoteIDs: ["note_001"]
+            availableNoteIDs: ["note_001"]
         ))
+    }
+
+    func testAnnotationPanelScrollBehaviorSkipsAlreadyVisibleSelectionChanges() {
+        XCTAssertNil(
+            AnnotationPanelScrollBehavior.instruction(
+                selectedNoteID: "note_002",
+                availableNoteIDs: ["note_001", "note_002", "note_003"],
+                visibleNoteIDs: ["note_001", "note_002"],
+                isInitialAppearance: false
+            )
+        )
+    }
+
+    func testAnnotationPanelScrollBehaviorScrollsOffscreenSelectionChanges() {
+        XCTAssertEqual(
+            AnnotationPanelScrollBehavior.instruction(
+                selectedNoteID: "note_002",
+                availableNoteIDs: ["note_001", "note_002", "note_003"],
+                visibleNoteIDs: ["note_001", "note_003"],
+                isInitialAppearance: false
+            ),
+            AnnotationPanelScrollInstruction(targetNoteID: "note_002", animationDuration: 0.16)
+        )
+        XCTAssertNil(
+            AnnotationPanelScrollBehavior.instruction(
+                selectedNoteID: "note_004",
+                availableNoteIDs: ["note_001", "note_002", "note_003"],
+                visibleNoteIDs: ["note_001", "note_003"],
+                isInitialAppearance: false
+            )
+        )
+    }
+
+    func testAnnotationPanelScrollBehaviorAvoidsInitialAppearAnimation() {
+        XCTAssertEqual(
+            AnnotationPanelScrollBehavior.instruction(
+                selectedNoteID: "note_002",
+                availableNoteIDs: ["note_001", "note_002"],
+                visibleNoteIDs: [],
+                isInitialAppearance: true
+            ),
+            AnnotationPanelScrollInstruction(targetNoteID: "note_002", animationDuration: nil)
+        )
+        XCTAssertNil(
+            AnnotationPanelScrollBehavior.instruction(
+                selectedNoteID: "note_003",
+                availableNoteIDs: ["note_001", "note_002"],
+                visibleNoteIDs: [],
+                isInitialAppearance: true
+            )
+        )
+    }
+
+    func testAnnotationPanelVisibilityBehaviorUsesViewportAndStableOrder() {
+        let noteFrames: [String: CGRect] = [
+            "note_001": CGRect(x: 0, y: -12, width: 200, height: 20),
+            "note_002": CGRect(x: 0, y: 12, width: 200, height: 80),
+            "note_003": CGRect(x: 0, y: 198, width: 200, height: 80),
+            "note_004": CGRect(x: 0, y: 240, width: 200, height: 80)
+        ]
+
+        XCTAssertEqual(
+            AnnotationPanelVisibilityBehavior.visibleNoteIDs(
+                noteIDs: ["note_004", "note_002", "note_001", "note_003"],
+                noteFrames: noteFrames,
+                viewport: CGRect(x: 0, y: 0, width: 220, height: 220),
+                minimumVisibleHeight: 10
+            ),
+            ["note_002", "note_003"]
+        )
+    }
+
+    func testAnnotationPanelVisibilityBehaviorIgnoresStaleMeasurementsAfterNoteListChanges() {
+        XCTAssertEqual(
+            AnnotationPanelVisibilityBehavior.currentVisibleNoteIDs(
+                measuredNoteIDs: ["old-doc|note_001", "old-doc|note_002"],
+                currentNoteIDs: ["old-doc|note_001", "old-doc|note_002"],
+                visibleNoteIDs: ["note_002"]
+            ),
+            ["note_002"]
+        )
+        XCTAssertEqual(
+            AnnotationPanelVisibilityBehavior.currentVisibleNoteIDs(
+                measuredNoteIDs: ["old-doc|note_001"],
+                currentNoteIDs: ["new-doc|note_001"],
+                visibleNoteIDs: ["note_001"]
+            ),
+            []
+        )
     }
 
     func testReaderStatusBannerOnlyShowsImportAndOpenFailures() {
@@ -943,7 +1382,13 @@ final class AppStateFlowTests: XCTestCase {
             ReaderStatusBannerPresentation(
                 title: "需要处理",
                 message: "只能打开 .md 或 .markdown 文件。",
-                systemImage: "exclamationmark.triangle"
+                systemImage: "exclamationmark.triangle",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整错误详情；不会关闭提示",
+                copyValue: "只能打开 .md 或 .markdown 文件。",
+                dismissTitle: "关闭",
+                dismissHelp: "关闭这条提示",
+                dismissShortcutHint: "Esc"
             )
         )
         XCTAssertEqual(
@@ -964,6 +1409,280 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertNil(ReaderStatusBannerPresentation.presentation(for: .saving))
     }
 
+    func testReaderStatusBannerShowsTaskMarkerSaveFailuresWithDocumentContext() {
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: .failed("任务状态保存失败：权限不足"),
+                hasOpenDocument: true
+            ),
+            ReaderStatusBannerPresentation(
+                title: "保存未完成",
+                message: "任务状态保存失败：权限不足。当前文档仍保持打开。",
+                systemImage: "exclamationmark.triangle",
+                actionTitle: nil,
+                copyTitle: "复制详情",
+                copyHelp: "复制完整失败详情；不会隐藏保存失败",
+                copyValue: "任务状态保存失败：权限不足。当前文档仍保持打开。",
+                dismissTitle: nil,
+                dismissHelp: nil,
+                dismissShortcutHint: nil
+            )
+        )
+    }
+
+    func testReaderStatusBannerDismissActionOnlyAppearsForTransientImportFailures() {
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: .failed("拖拽导入失败：无法读取文件 URL"),
+                hasOpenDocument: true
+            )?.dismissTitle,
+            "关闭"
+        )
+        XCTAssertNil(
+            ReaderStatusBannerPresentation.presentation(
+                for: .failed("任务状态保存失败：权限不足"),
+                hasOpenDocument: true
+            )?.dismissTitle
+        )
+    }
+
+    func testReaderStatusBannerExposesCopyActionForFullMessage() {
+        let message = "拖拽导入失败：无法读取文件 URL"
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: .failed(message),
+                hasOpenDocument: true
+            ),
+            ReaderStatusBannerPresentation(
+                title: "导入未完成",
+                message: "\(message)。当前文档仍保持打开。",
+                systemImage: "exclamationmark.triangle",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整错误详情；不会关闭提示",
+                copyValue: "\(message)。当前文档仍保持打开。",
+                dismissTitle: "关闭",
+                dismissHelp: "关闭这条提示",
+                dismissShortcutHint: "Esc"
+            )
+        )
+
+        XCTAssertEqual(
+            ReaderStatusBannerPresentation.presentation(
+                for: .failed("任务状态保存失败：权限不足"),
+                hasOpenDocument: true
+            )?.copyTitle,
+            "复制详情"
+        )
+    }
+
+    func testReaderStatusBannerCopyButtonShowsCopiedFeedback() {
+        XCTAssertEqual(
+            ReaderStatusBannerCopyButtonPresentation.presentation(
+                title: "复制详情",
+                help: "复制完整错误详情；不会关闭提示",
+                isCopied: false
+            ),
+            ReaderStatusBannerCopyButtonPresentation(
+                title: "复制错误详情",
+                systemImage: "doc.on.doc",
+                hitTargetSize: 24,
+                backgroundOpacity: 0,
+                help: "复制完整错误详情；不会关闭提示",
+                accessibilityLabel: "复制错误详情",
+                accessibilityHint: "按 Return 复制完整错误详情；提示会保持显示"
+            )
+        )
+        XCTAssertEqual(
+            ReaderStatusBannerCopyButtonPresentation.presentation(
+                title: "复制详情",
+                help: "复制完整错误详情；不会关闭提示",
+                isCopied: true
+            ),
+            ReaderStatusBannerCopyButtonPresentation(
+                title: "已复制",
+                systemImage: "checkmark.circle",
+                hitTargetSize: 24,
+                backgroundOpacity: 0.10,
+                help: "已复制错误详情",
+                accessibilityLabel: "已复制错误详情",
+                accessibilityHint: "错误详情已复制到剪切板，可继续复制；提示会保持显示，按钮会短暂恢复"
+            )
+        )
+        XCTAssertEqual(
+            ReaderStatusBannerCopyButtonPresentation.presentation(
+                title: "复制详情",
+                help: "复制完整失败详情；不会隐藏保存失败",
+                isCopied: false
+            ),
+            ReaderStatusBannerCopyButtonPresentation(
+                title: "复制失败详情",
+                systemImage: "doc.on.doc",
+                hitTargetSize: 24,
+                backgroundOpacity: 0,
+                help: "复制完整失败详情；不会隐藏保存失败",
+                accessibilityLabel: "复制失败详情",
+                accessibilityHint: "按 Return 复制完整失败详情；提示会保持显示，保存失败仍会继续可见"
+            )
+        )
+        XCTAssertEqual(
+            ReaderStatusBannerCopyButtonPresentation.presentation(
+                title: "复制详情",
+                help: "复制完整提示；不会关闭提示",
+                isCopied: false
+            ),
+            ReaderStatusBannerCopyButtonPresentation(
+                title: "复制提示详情",
+                systemImage: "doc.on.doc",
+                hitTargetSize: 24,
+                backgroundOpacity: 0,
+                help: "复制完整提示；不会关闭提示",
+                accessibilityLabel: "复制提示详情",
+                accessibilityHint: "按 Return 复制完整提示；提示会保持显示"
+            )
+        )
+        XCTAssertEqual(
+            ReaderStatusBannerCopyButtonPresentation.presentation(
+                title: "复制详情",
+                help: "复制完整提示；不会关闭提示",
+                isCopied: true
+            ),
+            ReaderStatusBannerCopyButtonPresentation(
+                title: "已复制",
+                systemImage: "checkmark.circle",
+                hitTargetSize: 24,
+                backgroundOpacity: 0.10,
+                help: "已复制提示详情",
+                accessibilityLabel: "已复制提示详情",
+                accessibilityHint: "提示详情已复制到剪切板，可继续复制；提示会保持显示，按钮会短暂恢复"
+            )
+        )
+    }
+
+    func testCopyingReaderStatusMessageDoesNotChangeVisibleSaveState() {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        pasteboard.clearContents()
+        let state = AppState()
+        let message = "拖拽导入失败：无法读取文件 URL。当前文档仍保持打开。"
+        state.saveState = .failed("拖拽导入失败：无法读取文件 URL")
+
+        XCTAssertTrue(state.copyStatusMessageToPasteboard(message, pasteboard: pasteboard))
+
+        XCTAssertEqual(pasteboard.string(forType: .string), message)
+        XCTAssertEqual(state.saveState, .failed("拖拽导入失败：无法读取文件 URL"))
+        XCTAssertFalse(state.copyStatusMessageToPasteboard("   ", pasteboard: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), message)
+    }
+
+    func testReaderEmptyStatePresentationMakesOpenActionDiscoverable() {
+        XCTAssertEqual(
+            ReaderEmptyStatePresentation.presentation(),
+            ReaderEmptyStatePresentation(
+                title: "打开 Markdown",
+                message: "选择 .md 或 .markdown 文件开始阅读和批注",
+                systemImage: "doc.text",
+                actionTitle: "选择 .md 文件",
+                help: "打开 Markdown 文档",
+                keyboardShortcutHint: "Return",
+                accessibilityLabel: "打开 Markdown，选择 .md 或 .markdown 文件开始阅读和批注",
+                accessibilityHint: "按 Return 选择 Markdown 文件"
+            )
+        )
+    }
+
+    func testReaderFooterStatusPresentationExposesCopyActionForTruncatedStatus() {
+        let message = "批注保存失败：无法写入文件 /Users/example/Documents/Very/Long/Path/sample.review.json，请检查权限后重试。"
+        let presentation = ReaderFooterStatusPresentation.presentation(
+            documentText: "2048 字符    80 行",
+            saveState: .failed(message),
+            maximumSaveStateLength: 28
+        )
+
+        XCTAssertEqual(presentation.saveStateText, "批注保存失败：无法写入文件 /Users/exampl…")
+        XCTAssertEqual(presentation.documentAccessibilityLabel, "文档状态：2048 字符    80 行")
+        XCTAssertEqual(presentation.saveStateAccessibilityLabel, "保存状态：\(message)")
+        XCTAssertEqual(
+            presentation.saveStateAccessibilityHint,
+            "保存失败且状态已截断；可悬停查看或复制完整失败状态，复制不会改变当前保存状态"
+        )
+        XCTAssertEqual(presentation.copyTitle, "复制失败状态")
+        XCTAssertEqual(presentation.copyHelp, "复制完整失败状态；不会改变当前保存状态")
+        XCTAssertEqual(presentation.copyValue, message)
+        let idlePresentation = ReaderFooterStatusPresentation.presentation(
+            documentText: "未打开文档",
+            saveState: .idle
+        )
+        XCTAssertEqual(idlePresentation.documentAccessibilityLabel, "文档状态：未打开文档")
+        XCTAssertEqual(idlePresentation.saveStateAccessibilityLabel, "保存状态：就绪")
+        XCTAssertNil(idlePresentation.saveStateAccessibilityHint)
+        XCTAssertNil(idlePresentation.copyTitle)
+    }
+
+    func testReaderFooterStatusPresentationExposesCopyActionForVisibleFailures() {
+        let message = "任务状态保存失败：权限不足"
+        let presentation = ReaderFooterStatusPresentation.presentation(
+            documentText: "2048 字符    80 行",
+            saveState: .failed(message),
+            maximumSaveStateLength: 80
+        )
+
+        XCTAssertEqual(presentation.saveStateText, message)
+        XCTAssertEqual(presentation.saveStateAccessibilityHint, "保存失败；可复制完整失败状态，复制不会改变当前保存状态")
+        XCTAssertEqual(presentation.copyTitle, "复制失败状态")
+        XCTAssertEqual(presentation.copyHelp, "复制完整失败状态；不会改变当前保存状态")
+        XCTAssertEqual(presentation.copyValue, message)
+    }
+
+    func testReaderFooterStatusCopyButtonShowsCopiedFeedback() {
+        XCTAssertEqual(
+            ReaderFooterStatusCopyButtonPresentation.presentation(
+                title: "复制状态",
+                help: "复制完整状态信息",
+                isCopied: false
+            ),
+            ReaderFooterStatusCopyButtonPresentation(
+                title: "复制状态",
+                systemImage: "doc.on.doc",
+                hitTargetSize: 24,
+                backgroundOpacity: 0,
+                help: "复制完整状态信息",
+                accessibilityLabel: "复制状态",
+                accessibilityHint: "按 Return 复制完整状态信息；状态栏会保持显示"
+            )
+        )
+        XCTAssertEqual(
+            ReaderFooterStatusCopyButtonPresentation.presentation(
+                title: "复制状态",
+                help: "复制完整状态信息",
+                isCopied: true
+            ),
+            ReaderFooterStatusCopyButtonPresentation(
+                title: "已复制",
+                systemImage: "checkmark.circle",
+                hitTargetSize: 24,
+                backgroundOpacity: 0.10,
+                help: "已复制状态信息",
+                accessibilityLabel: "已复制状态",
+                accessibilityHint: "完整状态信息已复制到剪切板，可继续复制；按钮会短暂恢复"
+            )
+        )
+        XCTAssertEqual(
+            ReaderFooterStatusCopyButtonPresentation.presentation(
+                title: "复制失败状态",
+                help: "复制完整失败状态；不会改变当前保存状态",
+                isCopied: false
+            ),
+            ReaderFooterStatusCopyButtonPresentation(
+                title: "复制失败状态",
+                systemImage: "doc.on.doc",
+                hitTargetSize: 24,
+                backgroundOpacity: 0,
+                help: "复制完整失败状态；不会改变当前保存状态",
+                accessibilityLabel: "复制失败状态",
+                accessibilityHint: "按 Return 复制完整失败状态；不会改变当前保存状态，状态栏会保持显示"
+            )
+        )
+    }
+
     func testReaderStatusBannerShowsSidecarLoadWarningsWithoutCallingImportFailed() {
         XCTAssertEqual(
             ReaderStatusBannerPresentation.presentation(
@@ -973,7 +1692,13 @@ final class AppStateFlowTests: XCTestCase {
             ReaderStatusBannerPresentation(
                 title: "批注未恢复",
                 message: "文档已打开，批注未恢复；已使用空批注会话继续。JSON 格式错误",
-                systemImage: "exclamationmark.triangle"
+                systemImage: "exclamationmark.triangle",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整提示；不会关闭提示",
+                copyValue: "文档已打开，批注未恢复；已使用空批注会话继续。JSON 格式错误",
+                dismissTitle: "关闭",
+                dismissHelp: "关闭这条提示",
+                dismissShortcutHint: "Esc"
             )
         )
         XCTAssertEqual(
@@ -984,7 +1709,369 @@ final class AppStateFlowTests: XCTestCase {
             ReaderStatusBannerPresentation(
                 title: "批注已恢复",
                 message: "文档已打开，批注已从应用数据目录恢复。JSON 格式错误。原文件已备份到：/tmp/sample.review.json.invalid",
-                systemImage: "exclamationmark.triangle"
+                systemImage: "exclamationmark.triangle",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整提示；不会关闭提示",
+                copyValue: "文档已打开，批注已从应用数据目录恢复。JSON 格式错误。原文件已备份到：/tmp/sample.review.json.invalid",
+                dismissTitle: "关闭",
+                dismissHelp: "关闭这条提示",
+                dismissShortcutHint: "Esc"
+            )
+        )
+    }
+
+    func testReaderFooterStatusPresentationKeepsLongMessagesScannable() {
+        let longPath = "/Users/example/Documents/Very/Long/Path/That/Can/Overflow/sample.review.json"
+        let presentation = ReaderFooterStatusPresentation.presentation(
+            documentText: "3200 字符    140 行",
+            saveState: .failed("批注保存失败：无法写入文件 \(longPath)，请检查权限后重试。")
+        )
+
+        XCTAssertEqual(presentation.documentText, "3200 字符    140 行")
+        XCTAssertLessThanOrEqual(presentation.saveStateText.count, 72)
+        XCTAssertTrue(presentation.saveStateText.hasSuffix("…"))
+        XCTAssertEqual(
+            presentation.fullSaveStateText,
+            "批注保存失败：无法写入文件 \(longPath)，请检查权限后重试。"
+        )
+    }
+
+    func testPromptPreviewPresentationSeparatesEmptyDocumentAndWarningStates() {
+        XCTAssertEqual(
+            PromptPreviewPresentation.presentation(
+                state: .empty,
+                hasOpenDocument: false
+            ),
+            PromptPreviewPresentation(
+                previewText: "打开 Markdown 后显示 Prompt。",
+                systemImage: "doc.text",
+                isPlaceholder: true,
+                placeholderLineLimit: 3,
+                placeholderMinimumScaleFactor: 0.86,
+                accessibilityLabel: "Prompt 预览，未打开文档",
+                accessibilityHint: "按 ⌘O 打开 Markdown；生成 Prompt 后复制和保存动作会可用"
+            )
+        )
+        XCTAssertEqual(
+            PromptPreviewPresentation.presentation(
+                state: .empty,
+                hasOpenDocument: true
+            ),
+            PromptPreviewPresentation(
+                previewText: "暂无纳入 Prompt 的批注。",
+                systemImage: "text.badge.plus",
+                isPlaceholder: true,
+                placeholderLineLimit: 3,
+                placeholderMinimumScaleFactor: 0.86,
+                accessibilityLabel: "Prompt 预览，暂无纳入 Prompt 的批注",
+                accessibilityHint: "先在批注卡片勾选纳入 Prompt；复制动作会提示但不会修改剪切板"
+            )
+        )
+        XCTAssertEqual(
+            PromptPreviewPresentation.presentation(
+                state: PromptPreviewState(warnings: ["有 1 条批注需要重新定位。"]),
+                hasOpenDocument: true
+            ),
+            PromptPreviewPresentation(
+                previewText: "有 1 条批注需要重新定位。",
+                systemImage: "exclamationmark.triangle",
+                isPlaceholder: true,
+                placeholderLineLimit: 3,
+                placeholderMinimumScaleFactor: 0.86,
+                accessibilityLabel: "Prompt 预览，有批注需要确认",
+                accessibilityHint: "先重新定位或排除失效批注；Prompt 暂不可复制或保存"
+            )
+        )
+        XCTAssertEqual(
+            PromptPreviewPresentation.presentation(
+                state: PromptPreviewState(prompt: "请按批注修改", includedNoteCount: 1),
+                hasOpenDocument: true
+            ),
+            PromptPreviewPresentation(
+                previewText: "请按批注修改",
+                systemImage: nil,
+                isPlaceholder: false,
+                placeholderLineLimit: 3,
+                placeholderMinimumScaleFactor: 0.86,
+                accessibilityLabel: "Prompt 预览，已生成 Prompt，1 条批注",
+                accessibilityHint: "可选择文本复制；复制或保存按钮会先同步批注再执行"
+            )
+        )
+    }
+
+    func testPromptPreviewHeaderPresentationClarifiesDocumentAndSelectionState() {
+        XCTAssertEqual(
+            PromptPreviewHeaderPresentation.presentation(
+                state: .empty,
+                hasOpenDocument: false
+            ),
+            PromptPreviewHeaderPresentation(
+                countText: "未打开文档",
+                help: "打开 Markdown 后会统计纳入 Prompt 的批注；复制和保存动作会随 Prompt 启用",
+                accessibilityLabel: "Prompt 预览状态：未打开文档",
+                accessibilityHint: "打开 Markdown 后会统计纳入 Prompt 的批注；复制和保存动作会随 Prompt 启用"
+            )
+        )
+        XCTAssertEqual(
+            PromptPreviewHeaderPresentation.presentation(
+                state: .empty,
+                hasOpenDocument: true
+            ),
+            PromptPreviewHeaderPresentation(
+                countText: "未选择批注",
+                help: "勾选批注后会进入 Prompt；复制动作会提示但不会修改剪切板",
+                accessibilityLabel: "Prompt 预览状态：未选择批注",
+                accessibilityHint: "勾选批注后会进入 Prompt；复制动作会提示但不会修改剪切板"
+            )
+        )
+        XCTAssertEqual(
+            PromptPreviewHeaderPresentation.presentation(
+                state: PromptPreviewState(warnings: ["有 1 条批注需要重新定位。"], includedNoteCount: 1),
+                hasOpenDocument: true
+            ),
+            PromptPreviewHeaderPresentation(
+                countText: "1 条需确认",
+                help: "有批注需要重新定位或排除后再使用 Prompt；复制和保存暂不可用",
+                accessibilityLabel: "Prompt 预览状态：1 条需确认",
+                accessibilityHint: "有批注需要重新定位或排除后再使用 Prompt；复制和保存暂不可用"
+            )
+        )
+        XCTAssertEqual(
+            PromptPreviewHeaderPresentation.presentation(
+                state: PromptPreviewState(prompt: "请按批注修改", includedNoteCount: 3),
+                hasOpenDocument: true
+            ),
+            PromptPreviewHeaderPresentation(
+                countText: "已选择 3 条批注",
+                help: "当前 Prompt 将使用 3 条批注；复制或保存会先同步批注",
+                accessibilityLabel: "Prompt 预览状态：已选择 3 条批注",
+                accessibilityHint: "当前 Prompt 将使用 3 条批注；复制或保存会先同步批注"
+            )
+        )
+    }
+
+    func testPromptPreviewWarningPresentationStaysVisibleWhenPromptExists() {
+        XCTAssertNil(
+            PromptPreviewWarningPresentation.presentation(state: PromptPreviewState(prompt: "请按批注修改", includedNoteCount: 1))
+        )
+
+        XCTAssertEqual(
+            PromptPreviewWarningPresentation.presentation(
+                state: PromptPreviewState(
+                    prompt: "请按可用批注修改",
+                    warnings: ["有 1 条批注需要重新定位。"],
+                    includedNoteCount: 2
+                )
+            ),
+            PromptPreviewWarningPresentation(
+                message: "有 1 条批注需要重新定位。",
+                systemImage: "exclamationmark.triangle",
+                help: "重新定位或排除这条批注后再使用 Prompt；可用批注仍会显示在预览中",
+                accessibilityLabel: "Prompt 警告：有 1 条批注需要重新定位。",
+                accessibilityHint: "先处理这条批注；可用批注仍可复制和保存",
+                lineLimit: 2
+            )
+        )
+    }
+
+    func testReaderStatusBannerActionAndDismissButtonsExplainKeyboardFlow() {
+        XCTAssertEqual(
+            ReaderStatusBannerActionButtonPresentation.presentation(title: "重新载入文件"),
+            ReaderStatusBannerActionButtonPresentation(
+                title: "重新载入文件",
+                help: "重新载入磁盘上的 Markdown 文件，并重新同步任务状态",
+                accessibilityLabel: "重新载入文件",
+                accessibilityHint: "按 Return 重新载入磁盘上的 Markdown 文件；外部修改会以磁盘内容为准"
+            )
+        )
+        XCTAssertEqual(
+            ReaderStatusBannerDismissButtonPresentation.presentation(
+                title: "关闭",
+                help: "关闭这条提示",
+                shortcutHint: "Esc"
+            ),
+            ReaderStatusBannerDismissButtonPresentation(
+                title: "关闭",
+                hitTargetSize: 24,
+                backgroundOpacity: 0,
+                help: "关闭这条提示（Esc）",
+                accessibilityLabel: "关闭提示",
+                accessibilityHint: "按 Esc 关闭当前提示；不会重试打开文件，不会修改当前文档或批注"
+            )
+        )
+    }
+
+    func testReaderAnnotationCursorStateTracksAnnotationOperation() {
+        XCTAssertEqual(
+            ReaderAnnotationCursorState.state(
+                canCreateAnnotation: false,
+                isAnnotationPopoverPresented: false,
+                hasExistingAnnotationSelection: false
+            ),
+            .textSelection
+        )
+        XCTAssertEqual(
+            ReaderAnnotationCursorState.state(
+                canCreateAnnotation: true,
+                isAnnotationPopoverPresented: false,
+                hasExistingAnnotationSelection: false
+            ),
+            .annotationReady
+        )
+        XCTAssertEqual(
+            ReaderAnnotationCursorState.state(
+                canCreateAnnotation: true,
+                isAnnotationPopoverPresented: true,
+                hasExistingAnnotationSelection: false
+            ),
+            .annotationEditing
+        )
+        XCTAssertEqual(
+            ReaderAnnotationCursorState.state(
+                canCreateAnnotation: false,
+                isAnnotationPopoverPresented: false,
+                hasExistingAnnotationSelection: true
+            ),
+            .existingAnnotation
+        )
+        XCTAssertEqual(ReaderAnnotationCursorState.annotationReady.cursorKind, .crosshair)
+        XCTAssertEqual(ReaderAnnotationCursorState.annotationEditing.cursorKind, .arrow)
+        XCTAssertEqual(ReaderAnnotationCursorState.existingAnnotation.cursorKind, .pointingHand)
+    }
+
+    func testAnnotationEntryButtonPresentationShowsHoverActiveAndPressedFeedback() {
+        XCTAssertEqual(
+            AnnotationEntryButtonPresentation.presentation(
+                isActive: false,
+                isHovered: false,
+                isPressed: false
+            ),
+            AnnotationEntryButtonPresentation(
+                title: "批注 +",
+                help: "为当前选区添加批注",
+                accessibilityLabel: "为选区添加批注",
+                accessibilityHelp: "按 Return 打开批注输入框；会保留当前选区",
+                backgroundAlpha: 0,
+                borderWidth: 1,
+                shadowOpacity: 0.14,
+                shadowRadius: 9,
+                shadowYOffset: 3
+            )
+        )
+
+        XCTAssertEqual(
+            AnnotationEntryButtonPresentation.presentation(
+                isActive: false,
+                isHovered: true,
+                isPressed: false
+            ),
+            AnnotationEntryButtonPresentation(
+                title: "批注 +",
+                help: "点击为当前选区添加批注",
+                accessibilityLabel: "为选区添加批注",
+                accessibilityHelp: "按 Return 打开批注输入框；会保留当前选区",
+                backgroundAlpha: 0.08,
+                borderWidth: 1.1,
+                shadowOpacity: 0.18,
+                shadowRadius: 11,
+                shadowYOffset: 4
+            )
+        )
+
+        XCTAssertEqual(
+            AnnotationEntryButtonPresentation.presentation(
+                isActive: false,
+                isHovered: true,
+                isPressed: true
+            ).help,
+            "正在打开批注输入框"
+        )
+
+        XCTAssertEqual(
+            AnnotationEntryButtonPresentation.presentation(
+                isActive: true,
+                isHovered: false,
+                isPressed: false
+            ),
+            AnnotationEntryButtonPresentation(
+                title: "批注 +",
+                help: "批注输入框已打开",
+                accessibilityLabel: "批注输入框已打开",
+                accessibilityHelp: "输入意见后按 ⌘↩ 保存，按 Esc 取消",
+                backgroundAlpha: 0.14,
+                borderWidth: 1.2,
+                shadowOpacity: 0.22,
+                shadowRadius: 12,
+                shadowYOffset: 4
+            )
+        )
+    }
+
+    func testReaderCursorRefreshImmediatelyAppliesChangedCursorInsideReader() {
+        XCTAssertEqual(
+            ReaderCursorRefreshDecision.decision(
+                from: .textSelection,
+                to: .annotationReady,
+                isPointerInsideReader: true,
+                isPointerOverTaskMarker: false
+            ),
+            ReaderCursorRefreshDecision(
+                invalidatesCursorRects: true,
+                immediateCursorKind: .crosshair
+            )
+        )
+        XCTAssertEqual(
+            ReaderCursorRefreshDecision.decision(
+                from: .annotationReady,
+                to: .annotationEditing,
+                isPointerInsideReader: true,
+                isPointerOverTaskMarker: false
+            ).immediateCursorKind,
+            .arrow
+        )
+    }
+
+    func testReaderCursorRefreshDoesNotLeakCursorOutsideReader() {
+        XCTAssertEqual(
+            ReaderCursorRefreshDecision.decision(
+                from: .textSelection,
+                to: .annotationReady,
+                isPointerInsideReader: false,
+                isPointerOverTaskMarker: false
+            ),
+            ReaderCursorRefreshDecision(
+                invalidatesCursorRects: true,
+                immediateCursorKind: nil
+            )
+        )
+    }
+
+    func testReaderCursorRefreshKeepsTaskMarkerHandCursorPriority() {
+        XCTAssertEqual(
+            ReaderCursorRefreshDecision.decision(
+                from: .textSelection,
+                to: .annotationReady,
+                isPointerInsideReader: true,
+                isPointerOverTaskMarker: true
+            ),
+            ReaderCursorRefreshDecision(
+                invalidatesCursorRects: true,
+                immediateCursorKind: .pointingHand
+            )
+        )
+    }
+
+    func testReaderCursorRefreshIgnoresUnchangedState() {
+        XCTAssertEqual(
+            ReaderCursorRefreshDecision.decision(
+                from: .annotationReady,
+                to: .annotationReady,
+                isPointerInsideReader: true,
+                isPointerOverTaskMarker: false
+            ),
+            ReaderCursorRefreshDecision(
+                invalidatesCursorRects: false,
+                immediateCursorKind: nil
             )
         )
     }
@@ -1004,7 +2091,13 @@ final class AppStateFlowTests: XCTestCase {
             ReaderStatusBannerPresentation(
                 title: shared.title,
                 message: shared.message,
-                systemImage: shared.systemImage
+                systemImage: shared.systemImage,
+                copyTitle: "复制详情",
+                copyHelp: "复制完整提示；不会关闭提示",
+                copyValue: shared.message,
+                dismissTitle: "关闭",
+                dismissHelp: "关闭这条提示",
+                dismissShortcutHint: "Esc"
             )
         )
         XCTAssertEqual(
@@ -1114,6 +2207,14 @@ final class AppStateFlowTests: XCTestCase {
                 isFailure: true
             )
         )
+        XCTAssertEqual(
+            AnnotationActionStatusPresentation.presentation(for: .failed("该批注的原文位置需要重新确认。")),
+            AnnotationActionStatusPresentation(
+                message: "该批注的原文位置需要重新确认。请在阅读区重新选择原文，恢复后提示会自动消失。",
+                systemImage: "exclamationmark.triangle",
+                isFailure: true
+            )
+        )
         XCTAssertNil(
             AnnotationActionStatusPresentation.presentation(
                 for: .failed("只能打开 .md 或 .markdown 文件，当前文件类型为 .txt。")
@@ -1188,25 +2289,161 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertNil(AnnotationActionStatusPresentation.presentation(for: .saving))
     }
 
+    func testAnnotationActionStatusCompactsLongMessagesForPanelFooter() throws {
+        let longPath = "/Users/example/Documents/Specs/Very/Long/Folder/sample.prompt.md"
+        let status = try XCTUnwrap(
+            AnnotationActionStatusPresentation.presentation(for: .promptSaved(longPath))
+        )
+
+        XCTAssertEqual(status.message, "Prompt 已保存：\(longPath)")
+        XCTAssertLessThanOrEqual(status.displayMessage.count, 64)
+        XCTAssertTrue(status.displayMessage.hasSuffix("…"))
+        XCTAssertEqual(status.fullMessage, status.message)
+        XCTAssertEqual(status.accessibilityLabel, "状态：Prompt 已保存：\(longPath)")
+        XCTAssertEqual(status.accessibilityHint, "状态提示已截断，悬停可查看完整信息")
+    }
+
+    func testAnnotationActionStatusProvidesRetryHelpForSaveFailures() throws {
+        let status = try XCTUnwrap(
+            AnnotationActionStatusPresentation.presentation(for: .failed("批注保存失败：磁盘已满"))
+        )
+
+        XCTAssertTrue(status.showsRetrySaveAction)
+        XCTAssertEqual(status.retrySaveHelp, "重新保存当前批注文件")
+        XCTAssertEqual(status.retrySaveAccessibilityLabel, "重试保存批注")
+        XCTAssertEqual(status.retrySaveAccessibilityHint, "按 Return 重新保存当前批注文件")
+    }
+
+    func testAnnotationPanelEmptyStatePresentationIsActionableWithoutDocument() {
+        XCTAssertEqual(
+            AnnotationPanelEmptyStatePresentation.presentation(
+                hasOpenDocument: false,
+                noteCount: 0
+            ),
+            AnnotationPanelEmptyStatePresentation(
+                title: "未打开文档",
+                message: "打开 Markdown 后显示批注",
+                systemImage: "doc.text",
+                actionTitle: "打开 Markdown",
+                actionHelp: "选择 Markdown 文件开始阅读",
+                actionShortcutHint: "Return",
+                accessibilityLabel: "批注列表未打开文档",
+                accessibilityHint: "可打开 Markdown 后查看和新增批注",
+                actionAccessibilityLabel: "打开 Markdown 文件",
+                actionAccessibilityHint: "按 Return 选择 Markdown 文件"
+            )
+        )
+        XCTAssertEqual(
+            AnnotationPanelEmptyStatePresentation.presentation(
+                hasOpenDocument: true,
+                noteCount: 0
+            ),
+            AnnotationPanelEmptyStatePresentation(
+                title: "暂无批注",
+                message: "批注会出现在这里",
+                systemImage: "quote.bubble",
+                actionTitle: nil,
+                actionHelp: nil,
+                actionShortcutHint: nil,
+                accessibilityLabel: "批注列表暂无批注",
+                accessibilityHint: "在阅读区选择文本后可添加批注",
+                actionAccessibilityLabel: nil,
+                actionAccessibilityHint: nil
+            )
+        )
+        XCTAssertNil(
+            AnnotationPanelEmptyStatePresentation.presentation(
+                hasOpenDocument: true,
+                noteCount: 2
+            )
+        )
+    }
+
+    func testAnnotationPanelModeSummaryPresentationClarifiesPromptListHeader() {
+        XCTAssertEqual(
+            AnnotationPanelModeSummaryPresentation.presentation(
+                hasOpenDocument: false,
+                noteCount: 0
+            ),
+            AnnotationPanelModeSummaryPresentation(
+                title: "未打开文档",
+                help: "打开 Markdown 后显示批注列表"
+            )
+        )
+        XCTAssertEqual(
+            AnnotationPanelModeSummaryPresentation.presentation(
+                hasOpenDocument: true,
+                noteCount: 0
+            ),
+            AnnotationPanelModeSummaryPresentation(
+                title: "暂无批注",
+                help: "在阅读区选择文本后添加批注"
+            )
+        )
+        XCTAssertEqual(
+            AnnotationPanelModeSummaryPresentation.presentation(
+                hasOpenDocument: true,
+                noteCount: 3
+            ),
+            AnnotationPanelModeSummaryPresentation(
+                title: "3 条批注",
+                help: "当前文档共有 3 条批注"
+            )
+        )
+    }
+
+    func testInspectorPanelModeExplainsSegmentedPickerChoices() {
+        XCTAssertEqual(InspectorPanelMode.annotations.title, "批注")
+        XCTAssertEqual(InspectorPanelMode.annotations.help, "查看和编辑当前文档批注")
+        XCTAssertEqual(InspectorPanelMode.annotations.accessibilityLabel, "切换到批注面板")
+        XCTAssertEqual(InspectorPanelMode.annotations.accessibilityHint, "按 Return 显示批注列表和单条批注操作")
+
+        XCTAssertEqual(InspectorPanelMode.prompt.title, "Prompt")
+        XCTAssertEqual(InspectorPanelMode.prompt.help, "预览由已选批注生成的 Prompt")
+        XCTAssertEqual(InspectorPanelMode.prompt.accessibilityLabel, "切换到 Prompt 面板")
+        XCTAssertEqual(InspectorPanelMode.prompt.accessibilityHint, "按 Return 显示 Prompt 预览和批注摘要")
+    }
+
     func testNoteInclusionPresentationMakesPromptExclusionReadable() {
         let included = NoteInclusionPresentation.presentation(includeInPrompt: true, status: .confirmed)
         XCTAssertEqual(
             included,
-            NoteInclusionPresentation(label: "纳入 Prompt", detail: "会进入生成结果", isToggleOn: true)
+            NoteInclusionPresentation(
+                label: "纳入 Prompt",
+                detail: "会进入生成结果",
+                isToggleOn: true,
+                help: "从 Prompt 中排除这条批注",
+                accessibilityHint: "按 Return 从 Prompt 中排除这条批注",
+                isToggleEnabled: true
+            )
         )
         XCTAssertTrue(included.isToggleOn)
 
         let manuallyExcluded = NoteInclusionPresentation.presentation(includeInPrompt: false, status: .confirmed)
         XCTAssertEqual(
             manuallyExcluded,
-            NoteInclusionPresentation(label: "已排除", detail: "不会进入 Prompt", isToggleOn: false)
+            NoteInclusionPresentation(
+                label: "已排除",
+                detail: "不会进入 Prompt",
+                isToggleOn: false,
+                help: "纳入 Prompt",
+                accessibilityHint: "按 Return 将这条批注纳入 Prompt",
+                isToggleEnabled: true
+            )
         )
         XCTAssertFalse(manuallyExcluded.isToggleOn)
 
         let statusExcluded = NoteInclusionPresentation.presentation(includeInPrompt: true, status: .excluded)
         XCTAssertEqual(
             statusExcluded,
-            NoteInclusionPresentation(label: "已排除", detail: "不会进入 Prompt", isToggleOn: false)
+            NoteInclusionPresentation(
+                label: "已排除",
+                detail: "不会进入 Prompt",
+                isToggleOn: false,
+                help: "定位丢失的批注暂不能纳入 Prompt；重新选择原文后会自动恢复",
+                accessibilityHint: "定位丢失的批注暂不能纳入 Prompt；请先在阅读区重新选择原文，恢复后可重新纳入 Prompt",
+                isToggleEnabled: false
+            )
         )
         XCTAssertFalse(statusExcluded.isToggleOn)
     }
@@ -1216,25 +2453,431 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertFalse(NoteCardTapBehavior.shouldSelectNote(isEditing: true))
     }
 
+    func testNoteCardChromePresentationSeparatesHoverActiveAndExcludedStates() {
+        XCTAssertEqual(
+            NoteCardChromePresentation.presentation(
+                isActive: false,
+                isHovering: false,
+                isIncludedInPrompt: true
+            ),
+            NoteCardChromePresentation(emphasis: .normal, borderWidth: 1, opacity: 1)
+        )
+        XCTAssertEqual(
+            NoteCardChromePresentation.presentation(
+                isActive: false,
+                isHovering: true,
+                isIncludedInPrompt: true
+            ),
+            NoteCardChromePresentation(emphasis: .hover, borderWidth: 1.2, opacity: 1)
+        )
+        XCTAssertEqual(
+            NoteCardChromePresentation.presentation(
+                isActive: true,
+                isHovering: false,
+                isIncludedInPrompt: true
+            ),
+            NoteCardChromePresentation(emphasis: .active, borderWidth: 1.6, opacity: 1)
+        )
+        XCTAssertEqual(
+            NoteCardChromePresentation.presentation(
+                isActive: false,
+                isHovering: false,
+                isIncludedInPrompt: false
+            ),
+            NoteCardChromePresentation(emphasis: .excluded, borderWidth: 1, opacity: 0.68)
+        )
+    }
+
+    func testNoteCardPrimaryActionPresentationDistinguishesEditAndSave() {
+        XCTAssertEqual(
+            NoteCardPrimaryActionPresentation.presentation(
+                isEditing: false,
+                canSave: false
+            ),
+            NoteCardPrimaryActionPresentation(
+                title: "修改批注",
+                systemImage: "pencil",
+                isEnabled: true,
+                help: "编辑这条批注",
+                accessibilityLabel: "修改批注",
+                accessibilityHint: "按 Return 进入编辑；焦点会移动到批注意见输入框，Esc 可取消",
+                keyboardShortcutHint: nil
+            )
+        )
+        XCTAssertEqual(
+            NoteCardPrimaryActionPresentation.presentation(
+                isEditing: true,
+                canSave: false
+            ),
+            NoteCardPrimaryActionPresentation(
+                title: "保存修改",
+                systemImage: "checkmark",
+                isEnabled: false,
+                help: "修改批注内容后可保存",
+                accessibilityLabel: "保存修改",
+                accessibilityHint: "当前不可保存；修改批注内容后可用，焦点仍留在输入框",
+                keyboardShortcutHint: nil
+            )
+        )
+        XCTAssertEqual(
+            NoteCardPrimaryActionPresentation.presentation(
+                isEditing: true,
+                canSave: true
+            ),
+            NoteCardPrimaryActionPresentation(
+                title: "保存修改",
+                systemImage: "checkmark",
+                isEnabled: true,
+                help: "保存当前批注修改（⌘↩）；保存后回到批注卡片",
+                accessibilityLabel: "保存批注修改",
+                accessibilityHint: "按 ⌘↩ 保存修改并退出编辑；焦点回到批注卡片",
+                keyboardShortcutHint: "⌘↩"
+            )
+        )
+    }
+
+    func testNoteCardCancelActionPresentationWarnsBeforeDiscardingDrafts() {
+        XCTAssertEqual(
+            NoteCardCancelActionPresentation.presentation(hasUnsavedDraft: false),
+            NoteCardCancelActionPresentation(
+                title: "取消",
+                help: "退出编辑并回到批注卡片",
+                accessibilityLabel: "取消编辑",
+                accessibilityHint: "按 Esc 退出编辑；不会修改批注"
+            )
+        )
+        XCTAssertEqual(
+            NoteCardCancelActionPresentation.presentation(hasUnsavedDraft: true),
+            NoteCardCancelActionPresentation(
+                title: "取消",
+                help: "放弃未保存修改并回到批注卡片",
+                accessibilityLabel: "放弃未保存修改并取消编辑",
+                accessibilityHint: "按 Esc 放弃未保存修改并退出编辑；不会保存草稿"
+            )
+        )
+    }
+
+    func testNoteCardKeyboardShortcutPresentationRequiresFocusedEditor() {
+        XCTAssertNil(
+            NoteCardKeyboardShortcutPresentation.presentation(
+                isEditing: false,
+                canSave: true,
+                isEditorFocused: true
+            )
+        )
+        XCTAssertNil(
+            NoteCardKeyboardShortcutPresentation.presentation(
+                isEditing: true,
+                canSave: true,
+                isEditorFocused: false
+            )
+        )
+        XCTAssertNil(
+            NoteCardKeyboardShortcutPresentation.presentation(
+                isEditing: true,
+                canSave: false,
+                isEditorFocused: true
+            )
+        )
+        XCTAssertEqual(
+            NoteCardKeyboardShortcutPresentation.presentation(
+                isEditing: true,
+                canSave: true,
+                isEditorFocused: true
+            ),
+            .saveComment
+        )
+    }
+
+    func testNoteCardEditorPlaceholderPresentationShowsOnlyForBlankEditingDrafts() {
+        XCTAssertNil(
+            NoteCardEditorPlaceholderPresentation.presentation(
+                isEditing: false,
+                draftComment: ""
+            )
+        )
+        XCTAssertNil(
+            NoteCardEditorPlaceholderPresentation.presentation(
+                isEditing: true,
+                draftComment: "请补充限制条件。"
+            )
+        )
+        XCTAssertEqual(
+            NoteCardEditorPlaceholderPresentation.presentation(
+                isEditing: true,
+                draftComment: "   \n"
+            ),
+            NoteCardEditorPlaceholderPresentation(
+                text: "输入批注意见...",
+                help: "批注意见不能为空"
+            )
+        )
+    }
+
+    func testNoteCardDeleteActionPresentationRequiresConfirmation() {
+        XCTAssertEqual(
+            NoteCardDeleteActionPresentation.presentation(isConfirmingDelete: false),
+            NoteCardDeleteActionPresentation(
+                title: "删除",
+                systemImage: "trash",
+                help: "进入删除确认；第一次不会删除",
+                isDestructiveConfirmation: false,
+                hitTargetHeight: 28,
+                backgroundOpacity: 0,
+                accessibilityLabel: "删除批注",
+                accessibilityHint: "按 Return 进入删除确认；不会立即删除这条批注"
+            )
+        )
+        XCTAssertEqual(
+            NoteCardDeleteActionPresentation.presentation(isConfirmingDelete: true),
+            NoteCardDeleteActionPresentation(
+                title: "确认删除",
+                systemImage: "trash.fill",
+                help: "再次点击将永久删除；删除后焦点回到批注列表；按 Esc 或移出卡片取消",
+                isDestructiveConfirmation: true,
+                hitTargetHeight: 28,
+                backgroundOpacity: 0.10,
+                accessibilityLabel: "确认删除批注",
+                accessibilityHint: "再次按 Return 将永久删除这条批注；删除后焦点回到批注列表；按 Esc 取消删除且不会修改批注"
+            )
+        )
+    }
+
+    func testNoteCardDeleteConfirmationResetBehaviorCancelsOnlyPendingConfirmation() {
+        XCTAssertFalse(NoteCardDeleteConfirmationResetBehavior.shouldReset(isConfirmingDelete: false))
+        XCTAssertTrue(NoteCardDeleteConfirmationResetBehavior.shouldReset(isConfirmingDelete: true))
+    }
+
+    func testNoteCardLocateActionPresentationExplainsAnchorState() {
+        XCTAssertEqual(
+            NoteCardLocateActionPresentation.presentation(status: .confirmed),
+            NoteCardLocateActionPresentation(
+                title: "定位",
+                systemImage: "scope",
+                help: "在阅读区滚动并高亮这条批注原文",
+                accessibilityLabel: "定位批注",
+                accessibilityHint: "按 Return 在阅读区定位这条批注；焦点会回到阅读区"
+            )
+        )
+        XCTAssertEqual(
+            NoteCardLocateActionPresentation.presentation(status: .anchorLost),
+            NoteCardLocateActionPresentation(
+                title: "定位需确认",
+                systemImage: "scope",
+                help: "原文位置已失效，点击后会提示在阅读区重新选择原文",
+                accessibilityLabel: "定位需确认的批注",
+                accessibilityHint: "按 Return 查看定位失效提示；焦点会回到阅读区，请重新选择原文"
+            )
+        )
+    }
+
+    func testNoteCardInteractionPresentationKeepsSelectedNoteReadOnlyUntilEditing() {
+        XCTAssertEqual(
+            NoteCardInteractionPresentation.presentation(
+                isSelected: false,
+                isEditing: false,
+                canSave: false
+            ),
+            NoteCardInteractionPresentation(
+                isChromeActive: false,
+                showsEditor: false,
+                allowsTapSelection: true,
+                primaryAction: NoteCardPrimaryActionPresentation(
+                    title: "修改批注",
+                    systemImage: "pencil",
+                    isEnabled: true,
+                    help: "编辑这条批注",
+                    accessibilityLabel: "修改批注",
+                    accessibilityHint: "按 Return 进入编辑；焦点会移动到批注意见输入框，Esc 可取消",
+                    keyboardShortcutHint: nil
+                )
+            )
+        )
+        XCTAssertEqual(
+            NoteCardInteractionPresentation.presentation(
+                isSelected: true,
+                isEditing: false,
+                canSave: false
+            ),
+            NoteCardInteractionPresentation(
+                isChromeActive: true,
+                showsEditor: false,
+                allowsTapSelection: true,
+                primaryAction: NoteCardPrimaryActionPresentation(
+                    title: "修改批注",
+                    systemImage: "pencil",
+                    isEnabled: true,
+                    help: "编辑这条批注",
+                    accessibilityLabel: "修改批注",
+                    accessibilityHint: "按 Return 进入编辑；焦点会移动到批注意见输入框，Esc 可取消",
+                    keyboardShortcutHint: nil
+                )
+            )
+        )
+        XCTAssertEqual(
+            NoteCardInteractionPresentation.presentation(
+                isSelected: true,
+                isEditing: true,
+                canSave: true
+            ),
+            NoteCardInteractionPresentation(
+                isChromeActive: true,
+                showsEditor: true,
+                allowsTapSelection: false,
+                primaryAction: NoteCardPrimaryActionPresentation(
+                    title: "保存修改",
+                    systemImage: "checkmark",
+                    isEnabled: true,
+                    help: "保存当前批注修改（⌘↩）；保存后回到批注卡片",
+                    accessibilityLabel: "保存批注修改",
+                    accessibilityHint: "按 ⌘↩ 保存修改并退出编辑；焦点回到批注卡片",
+                    keyboardShortcutHint: "⌘↩"
+                )
+            )
+        )
+    }
+
+    func testNoteCardSelectionChangePresentationClosesCleanDraftsOnly() {
+        XCTAssertEqual(
+            NoteCardSelectionChangePresentation.presentation(
+                noteID: "note_001",
+                selectedNoteID: "note_002",
+                isEditing: true,
+                hasUnsavedDraft: false
+            ),
+            .endEditing
+        )
+        XCTAssertEqual(
+            NoteCardSelectionChangePresentation.presentation(
+                noteID: "note_001",
+                selectedNoteID: "note_002",
+                isEditing: true,
+                hasUnsavedDraft: true
+            ),
+            .keepEditing
+        )
+        XCTAssertEqual(
+            NoteCardSelectionChangePresentation.presentation(
+                noteID: "note_001",
+                selectedNoteID: "note_001",
+                isEditing: true,
+                hasUnsavedDraft: false
+            ),
+            .syncDraftToCurrentNote
+        )
+    }
+
+    func testNoteCardStatusPresentationExplainsAnchorLostState() {
+        XCTAssertNil(NoteCardStatusPresentation.presentation(status: .confirmed))
+        guard let presentation = NoteCardStatusPresentation.presentation(status: .anchorLost) else {
+            XCTFail("Expected anchor-lost note status presentation.")
+            return
+        }
+
+        XCTAssertEqual(presentation.title, "定位需确认")
+        XCTAssertEqual(presentation.systemImage, "exclamationmark.triangle")
+        XCTAssertEqual(presentation.help, "原文位置已失效；在阅读区重新选择原文后会恢复定位并可继续纳入 Prompt")
+        XCTAssertEqual(mirroredStringField("accessibilityLabel", in: presentation), "批注定位需确认")
+        XCTAssertEqual(
+            mirroredStringField("accessibilityHint", in: presentation),
+            "原文位置已失效；点击定位需确认后回到阅读区重新选择原文"
+        )
+    }
+
+    func testNoteCardDraftStatusPresentationShowsUnsavedEdits() {
+        XCTAssertNil(
+            NoteCardDraftStatusPresentation.presentation(
+                isEditing: false,
+                hasUnsavedDraft: true
+            )
+        )
+        XCTAssertNil(
+            NoteCardDraftStatusPresentation.presentation(
+                isEditing: true,
+                hasUnsavedDraft: false
+            )
+        )
+        guard let presentation = NoteCardDraftStatusPresentation.presentation(
+            isEditing: true,
+            hasUnsavedDraft: true
+        ) else {
+            XCTFail("Expected unsaved draft status presentation.")
+            return
+        }
+
+        XCTAssertEqual(presentation.title, "未保存修改")
+        XCTAssertEqual(presentation.systemImage, "circle.fill")
+        XCTAssertEqual(presentation.help, "保存或取消后会离开编辑状态")
+        XCTAssertEqual(mirroredStringField("accessibilityLabel", in: presentation), "有未保存的批注修改")
+        XCTAssertEqual(
+            mirroredStringField("accessibilityHint", in: presentation),
+            "按 ⌘↩ 保存，或按 Esc 放弃修改"
+        )
+    }
+
+    func testNoteInclusionPresentationExplainsToggleAvailability() {
+        XCTAssertEqual(
+            NoteInclusionPresentation.presentation(includeInPrompt: true, status: .confirmed).help,
+            "从 Prompt 中排除这条批注"
+        )
+        XCTAssertTrue(
+            NoteInclusionPresentation.presentation(includeInPrompt: true, status: .confirmed).isToggleEnabled
+        )
+        XCTAssertEqual(
+            NoteInclusionPresentation.presentation(includeInPrompt: false, status: .confirmed).help,
+            "纳入 Prompt"
+        )
+        XCTAssertTrue(
+            NoteInclusionPresentation.presentation(includeInPrompt: false, status: .confirmed).isToggleEnabled
+        )
+        XCTAssertEqual(
+            NoteInclusionPresentation.presentation(includeInPrompt: true, status: .excluded).help,
+            "定位丢失的批注暂不能纳入 Prompt；重新选择原文后会自动恢复"
+        )
+        XCTAssertFalse(
+            NoteInclusionPresentation.presentation(includeInPrompt: true, status: .excluded).isToggleEnabled
+        )
+    }
+
     func testNoteCardEditPresentationTrimsAndRejectsBlankDrafts() {
         XCTAssertEqual(
             NoteCardEditPresentation.presentation(currentComment: "原批注", draftComment: "  请保留重点。 \n"),
-            NoteCardEditPresentation(trimmedComment: "请保留重点。", canSave: true)
+            NoteCardEditPresentation(
+                trimmedComment: "请保留重点。",
+                canSave: true,
+                accessibilityLabel: "批注意见输入框",
+                accessibilityHint: "按 ⌘↩ 保存修改，按 Esc 取消编辑"
+            )
         )
         XCTAssertEqual(
             NoteCardEditPresentation.presentation(currentComment: "原批注", draftComment: "\n  \t"),
-            NoteCardEditPresentation(trimmedComment: "", canSave: false)
+            NoteCardEditPresentation(
+                trimmedComment: "",
+                canSave: false,
+                accessibilityLabel: "批注意见输入框",
+                accessibilityHint: "批注意见不能为空；输入内容后可保存"
+            )
         )
     }
 
     func testNoteCardEditPresentationRequiresMeaningfulCommentChange() {
         XCTAssertEqual(
             NoteCardEditPresentation.presentation(currentComment: "请保留重点。", draftComment: "  请保留重点。 \n"),
-            NoteCardEditPresentation(trimmedComment: "请保留重点。", canSave: false)
+            NoteCardEditPresentation(
+                trimmedComment: "请保留重点。",
+                canSave: false,
+                accessibilityLabel: "批注意见输入框",
+                accessibilityHint: "内容未变化；修改批注意见后可保存"
+            )
         )
         XCTAssertEqual(
             NoteCardEditPresentation.presentation(currentComment: "请保留重点。", draftComment: "请补充权衡。"),
-            NoteCardEditPresentation(trimmedComment: "请补充权衡。", canSave: true)
+            NoteCardEditPresentation(
+                trimmedComment: "请补充权衡。",
+                canSave: true,
+                accessibilityLabel: "批注意见输入框",
+                accessibilityHint: "按 ⌘↩ 保存修改，按 Esc 取消编辑"
+            )
         )
     }
 
@@ -1246,7 +2889,20 @@ final class AppStateFlowTests: XCTestCase {
             ),
             AnnotationPopoverPresentation(
                 selectedTextPreview: "核心价值",
+                selectedTextHelp: "批注原文：核心价值",
+                selectedTextAccessibilityLabel: "批注原文：核心价值",
+                selectedTextAccessibilityHint: "当前批注会绑定到这段原文",
                 shortcutHint: "保存 ⌘↩ · 取消 Esc",
+                cancelTitle: "取消",
+                cancelHelp: "取消批注（Esc）；不会保存当前草稿",
+                cancelAccessibilityLabel: "取消批注",
+                cancelAccessibilityHint: "按 Esc 关闭批注窗口；不会保存当前草稿，阅读位置保持不变",
+                saveTitle: "添加批注",
+                saveHelp: "输入批注意见后可添加批注；当前不会保存空批注",
+                saveAccessibilityLabel: "添加批注",
+                saveAccessibilityHint: "当前不可添加；批注意见不能为空，输入内容后可按 ⌘↩ 添加批注",
+                commentAccessibilityLabel: "批注意见",
+                commentAccessibilityHint: "批注意见不能为空；输入内容后可按 ⌘↩ 添加批注",
                 canSave: false
             )
         )
@@ -1259,7 +2915,85 @@ final class AppStateFlowTests: XCTestCase {
 
         XCTAssertEqual(presentation.selectedTextPreview.count, 61)
         XCTAssertTrue(presentation.selectedTextPreview.hasSuffix("…"))
+        XCTAssertEqual(presentation.selectedTextHelp, "批注原文：\(longText)")
+        XCTAssertEqual(presentation.selectedTextAccessibilityHint, "预览已截断；完整原文可通过帮助提示查看")
+        XCTAssertEqual(presentation.cancelTitle, "取消")
         XCTAssertTrue(presentation.canSave)
+    }
+
+    func testAnnotationPopoverPrimaryActionExplainsDisabledAndEnabledStates() {
+        XCTAssertEqual(
+            AnnotationPopoverPresentation.presentation(
+                selectedText: "核心价值",
+                comment: "   "
+            ).saveHelp,
+            "输入批注意见后可添加批注；当前不会保存空批注"
+        )
+
+        let readyPresentation = AnnotationPopoverPresentation.presentation(
+            selectedText: "核心价值",
+            comment: "请补充限制条件。"
+        )
+        XCTAssertEqual(readyPresentation.saveTitle, "添加批注")
+        XCTAssertEqual(readyPresentation.saveHelp, "添加批注（⌘↩）；保存后会选中新批注")
+        XCTAssertEqual(readyPresentation.saveAccessibilityLabel, "添加批注")
+        XCTAssertEqual(readyPresentation.saveAccessibilityHint, "按 ⌘↩ 添加批注；保存后会选中新批注并关闭输入框")
+        XCTAssertEqual(readyPresentation.commentAccessibilityHint, "按 ⌘↩ 添加批注；Esc 取消，快捷批注会追加到此输入框")
+        XCTAssertEqual(readyPresentation.cancelHelp, "取消批注（Esc）；不会保存当前草稿")
+        XCTAssertEqual(
+            readyPresentation.cancelAccessibilityHint,
+            "按 Esc 关闭批注窗口；不会保存当前草稿，阅读位置保持不变"
+        )
+        XCTAssertTrue(readyPresentation.canSave)
+    }
+
+    func testAnnotationQuickPromptButtonPresentationExplainsSelectionState() {
+        XCTAssertEqual(
+            AnnotationQuickPromptButtonPresentation.presentation(
+                title: "润色",
+                isSelected: false
+            ),
+            AnnotationQuickPromptButtonPresentation(
+                title: "润色",
+                help: "插入快捷批注：润色",
+                accessibilityLabel: "快捷批注：润色",
+                accessibilityHint: "按 Return 插入并回到批注意见输入框"
+            )
+        )
+        XCTAssertEqual(
+            AnnotationQuickPromptButtonPresentation.presentation(
+                title: "润色",
+                isSelected: true
+            ),
+            AnnotationQuickPromptButtonPresentation(
+                title: "润色",
+                help: "已插入「润色」，再次点击会回到输入框",
+                accessibilityLabel: "已选择快捷批注：润色",
+                accessibilityHint: "已插入，按 Return 回到批注意见输入框"
+            )
+        )
+    }
+
+    func testAnnotationQuickPromptLabelPresentationExplainsAttachedPrompt() {
+        XCTAssertEqual(
+            AnnotationQuickPromptLabelPresentation.presentation(title: "润色"),
+            AnnotationQuickPromptLabelPresentation(
+                title: "润色",
+                help: "已附加快捷批注：润色",
+                accessibilityLabel: "已附加快捷批注：润色"
+            )
+        )
+    }
+
+    func testAnnotationSourceQuotePresentationKeepsQuoteAccessible() {
+        XCTAssertEqual(
+            AnnotationSourceQuotePresentation.presentation(text: "  核心价值\n更可控  "),
+            AnnotationSourceQuotePresentation(
+                displayText: "核心价值 更可控",
+                help: "批注原文：核心价值 更可控",
+                accessibilityLabel: "批注原文：核心价值 更可控"
+            )
+        )
     }
 
     func testSelectionClearsPendingScrollTargetsWithoutChangingDocument() throws {
@@ -1491,7 +3225,10 @@ final class AppStateFlowTests: XCTestCase {
             ReaderStatusBannerPresentation(
                 title: "导入未完成",
                 message: "\(message)当前文档仍保持打开。",
-                systemImage: "exclamationmark.triangle"
+                systemImage: "exclamationmark.triangle",
+                copyTitle: "复制详情",
+                copyHelp: "复制完整失败详情；不会隐藏保存失败",
+                copyValue: "\(message)当前文档仍保持打开。"
             )
         )
     }
@@ -2484,6 +4221,43 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertEqual(state.saveState, .failed("请拖入 .md 或 .markdown 文件。"))
     }
 
+    func testDismissingTransientImportFailureRestoresNeutralStateOnlyForImportFailures() throws {
+        let state = AppState()
+        XCTAssertFalse(state.openFirstSupportedDocument(at: []))
+        XCTAssertEqual(state.saveState, .failed("请拖入 .md 或 .markdown 文件。"))
+
+        state.dismissTransientImportFailure()
+
+        XCTAssertEqual(state.saveState, .idle)
+
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceURL = temp.appendingPathComponent("sample.md")
+        let unsupportedURL = temp.appendingPathComponent("notes.txt")
+        try sampleSource(title: "正在阅读", heading: "保留文档")
+            .write(to: sourceURL, atomically: true, encoding: .utf8)
+        try "plain text".write(to: unsupportedURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        XCTAssertFalse(state.openDocument(at: unsupportedURL))
+        XCTAssertEqual(
+            state.saveState,
+            .failed("只能打开 .md 或 .markdown 文件，当前文件类型为 .txt。")
+        )
+
+        state.dismissTransientImportFailure()
+
+        XCTAssertEqual(state.saveState, .loaded)
+
+        state.saveState = .failed("批注保存失败：磁盘已满")
+        state.dismissTransientImportFailure()
+
+        XCTAssertEqual(state.saveState, .failed("批注保存失败：磁盘已满"))
+    }
+
     func testFailedImportBannerClarifiesCurrentDocumentRemainsOpen() throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -3146,6 +4920,15 @@ final class AppStateFlowTests: XCTestCase {
         )
     }
 
+    private func sourceRange(of needle: String, in source: String) -> SourceTextRange? {
+        let nsSource = source as NSString
+        let range = nsSource.range(of: needle)
+        guard range.location != NSNotFound else {
+            return nil
+        }
+        return SourceTextRange(lowerBound: range.location, upperBound: range.location + range.length)
+    }
+
     private func waitUntil(
         timeout: TimeInterval,
         predicate: @escaping @MainActor () -> Bool
@@ -3227,5 +5010,13 @@ final class AppStateFlowTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("samples/markdown/sample_prd.md")
+    }
+
+    private func mirroredStringField(_ fieldName: String, in value: Any?) -> String? {
+        guard let value else {
+            return nil
+        }
+
+        return Mirror(reflecting: value).children.first { $0.label == fieldName }?.value as? String
     }
 }

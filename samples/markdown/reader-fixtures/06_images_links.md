@@ -22,6 +22,10 @@ Bare URL fallback: https://example.com/bare-url
 
 Inline image fallback: release badge ![Build badge](https://example.com/badge.svg) and reference icon ![Reference badge][inline-image-ref].
 
+## Obsidian File Embeds
+
+Review packet ![[docs/assets/review-brief.pdf]] with call audio ![[captures/interview.m4a]] and prototype ![[demos/prototype.mov|prototype walkthrough]].
+
 ## Reference Image
 
 ![Reference local image][local-image-ref]

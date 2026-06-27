@@ -40,6 +40,23 @@ public struct RecentDocumentStore {
         userDefaults.set(path, forKey: Self.lastOpenedDocumentPathKey)
     }
 
+    public func removeOpenedDocument(at url: URL) {
+        let path = normalizedPath(for: url)
+        var paths = userDefaults.stringArray(forKey: Self.recentDocumentPathsKey) ?? []
+        paths.removeAll { $0 == path }
+
+        if paths.isEmpty {
+            userDefaults.removeObject(forKey: Self.recentDocumentPathsKey)
+            userDefaults.removeObject(forKey: Self.lastOpenedDocumentPathKey)
+            return
+        }
+
+        userDefaults.set(paths, forKey: Self.recentDocumentPathsKey)
+        if userDefaults.string(forKey: Self.lastOpenedDocumentPathKey) == path {
+            userDefaults.set(paths[0], forKey: Self.lastOpenedDocumentPathKey)
+        }
+    }
+
     public func clear() {
         userDefaults.removeObject(forKey: Self.recentDocumentPathsKey)
         userDefaults.removeObject(forKey: Self.lastOpenedDocumentPathKey)

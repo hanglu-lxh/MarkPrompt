@@ -18,9 +18,13 @@ Extended inline syntax should read naturally: water is H~2~O, a square term is x
 
 Literal technical text should remain intact: API_TOKEN, snake_case, a_b_c, and 2 * 3.
 
+Obsidian tags should style #reader/tag, but inline code `#not-a-tag` should stay code.
+
+Bare URLs should link https://example.com/live-url, but code URLs `https://example.com/code-url` should stay code.
+
 Escaped Markdown markers should stay literal: \*not italic\*, \_not emphasis\_, \[not a link](https://example.com/no-link), and \![not an image](https://example.com/no-image.png).
 
-Abbreviations should stay selectable while carrying a quiet hint: API design remains readable.
+Abbreviations should stay selectable while carrying a quiet hint: API design remains readable, but code `API()` should stay code.
 
 ## Hard Breaks
 

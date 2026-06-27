@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SourceTextRange: Codable, Equatable, Sendable {
+public struct SourceTextRange: Codable, Equatable, Hashable, Sendable {
     public var lowerBound: Int
     public var upperBound: Int
 

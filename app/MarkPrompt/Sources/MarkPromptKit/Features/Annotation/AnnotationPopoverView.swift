@@ -3,32 +3,101 @@ import SwiftUI
 
 public struct AnnotationPopoverPresentation: Equatable, Sendable {
     public var selectedTextPreview: String
+    public var selectedTextHelp: String
+    public var selectedTextAccessibilityLabel: String
+    public var selectedTextAccessibilityHint: String
     public var shortcutHint: String
+    public var cancelTitle: String
+    public var cancelHelp: String
+    public var cancelAccessibilityLabel: String
+    public var cancelAccessibilityHint: String
+    public var saveTitle: String
+    public var saveHelp: String
+    public var saveAccessibilityLabel: String
+    public var saveAccessibilityHint: String
+    public var commentAccessibilityLabel: String
+    public var commentAccessibilityHint: String
     public var canSave: Bool
 
-    public init(selectedTextPreview: String, shortcutHint: String, canSave: Bool) {
+    public init(
+        selectedTextPreview: String,
+        selectedTextHelp: String,
+        selectedTextAccessibilityLabel: String,
+        selectedTextAccessibilityHint: String,
+        shortcutHint: String,
+        cancelTitle: String = "取消",
+        cancelHelp: String = "取消批注（Esc）；不会保存当前草稿",
+        cancelAccessibilityLabel: String = "取消批注",
+        cancelAccessibilityHint: String = "按 Esc 关闭批注窗口；不会保存当前草稿，阅读位置保持不变",
+        saveTitle: String = "添加批注",
+        saveHelp: String,
+        saveAccessibilityLabel: String? = nil,
+        saveAccessibilityHint: String? = nil,
+        commentAccessibilityLabel: String = "批注意见",
+        commentAccessibilityHint: String = "输入批注意见；可使用快捷批注按钮补全文本",
+        canSave: Bool
+    ) {
         self.selectedTextPreview = selectedTextPreview
+        self.selectedTextHelp = selectedTextHelp
+        self.selectedTextAccessibilityLabel = selectedTextAccessibilityLabel
+        self.selectedTextAccessibilityHint = selectedTextAccessibilityHint
         self.shortcutHint = shortcutHint
+        self.cancelTitle = cancelTitle
+        self.cancelHelp = cancelHelp
+        self.cancelAccessibilityLabel = cancelAccessibilityLabel
+        self.cancelAccessibilityHint = cancelAccessibilityHint
+        self.saveTitle = saveTitle
+        self.saveHelp = saveHelp
+        self.saveAccessibilityLabel = saveAccessibilityLabel ?? saveTitle
+        self.saveAccessibilityHint = saveAccessibilityHint ?? (canSave ? "按 ⌘↩ 添加批注" : saveHelp)
+        self.commentAccessibilityLabel = commentAccessibilityLabel
+        self.commentAccessibilityHint = commentAccessibilityHint
         self.canSave = canSave
     }
 
     public static func presentation(selectedText: String, comment: String) -> AnnotationPopoverPresentation {
-        AnnotationPopoverPresentation(
+        let canSave = comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let normalizedSelectedText = normalizedPreviewText(for: selectedText)
+        let isSelectedTextTruncated = normalizedSelectedText.count > 60
+        let selectedTextLabel = normalizedSelectedText.isEmpty
+            ? "批注原文：未选中文本"
+            : "批注原文：\(normalizedSelectedText)"
+        return AnnotationPopoverPresentation(
             selectedTextPreview: compactPreview(for: selectedText),
+            selectedTextHelp: selectedTextLabel,
+            selectedTextAccessibilityLabel: selectedTextLabel,
+            selectedTextAccessibilityHint: isSelectedTextTruncated
+                ? "预览已截断；完整原文可通过帮助提示查看"
+                : "当前批注会绑定到这段原文",
             shortcutHint: "保存 ⌘↩ · 取消 Esc",
-            canSave: comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            cancelTitle: "取消",
+            saveTitle: "添加批注",
+            saveHelp: canSave
+                ? "添加批注（⌘↩）；保存后会选中新批注"
+                : "输入批注意见后可添加批注；当前不会保存空批注",
+            saveAccessibilityHint: canSave
+                ? "按 ⌘↩ 添加批注；保存后会选中新批注并关闭输入框"
+                : "当前不可添加；批注意见不能为空，输入内容后可按 ⌘↩ 添加批注",
+            commentAccessibilityHint: canSave
+                ? "按 ⌘↩ 添加批注；Esc 取消，快捷批注会追加到此输入框"
+                : "批注意见不能为空；输入内容后可按 ⌘↩ 添加批注",
+            canSave: canSave
         )
     }
 
     private static func compactPreview(for text: String, limit: Int = 60) -> String {
-        let normalized = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let normalized = normalizedPreviewText(for: text)
         guard normalized.count > limit else {
             return normalized
         }
 
         return String(normalized.prefix(limit)) + "…"
+    }
+
+    private static func normalizedPreviewText(for text: String) -> String {
+        text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
 }
 
@@ -47,7 +116,7 @@ public struct AnnotationPopoverView: View {
             selectedText: appState.readerSelection?.selectedText ?? "",
             comment: comment
         )
-        let selectedQuickPromptID = quickPrompts.first?.id
+        let selectedQuickPromptIDs = Set(quickPrompts.map(\.id))
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center) {
@@ -65,7 +134,9 @@ public struct AnnotationPopoverView: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
-                .help("关闭")
+                .help(presentation.cancelHelp)
+                .accessibilityLabel(presentation.cancelAccessibilityLabel)
+                .accessibilityHint(presentation.cancelAccessibilityHint)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -73,14 +144,20 @@ public struct AnnotationPopoverView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                AnnotationSourceQuoteView(text: presentation.selectedTextPreview, lineLimit: 1)
+                AnnotationSourceQuoteView(
+                    text: presentation.selectedTextPreview,
+                    lineLimit: 1,
+                    help: presentation.selectedTextHelp,
+                    accessibilityLabel: presentation.selectedTextAccessibilityLabel,
+                    accessibilityHint: presentation.selectedTextAccessibilityHint
+                )
             }
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 8)], alignment: .leading, spacing: 8) {
                 ForEach(QuickPromptCatalog.defaults) { definition in
                     AnnotationQuickPromptButton(
                         title: definition.label,
-                        isSelected: selectedQuickPromptID == definition.id
+                        isSelected: selectedQuickPromptIDs.contains(definition.id)
                     ) {
                         applyQuickPrompt(definition)
                     }
@@ -106,6 +183,8 @@ public struct AnnotationPopoverView: View {
             .background(Color(nsColor: .textBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .frame(height: 102)
+            .accessibilityLabel(presentation.commentAccessibilityLabel)
+            .accessibilityHint(presentation.commentAccessibilityHint)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(
@@ -118,11 +197,14 @@ public struct AnnotationPopoverView: View {
                 Button {
                     appState.cancelAnnotation()
                 } label: {
-                    Label("删除", systemImage: "trash")
+                    Label(presentation.cancelTitle, systemImage: "xmark")
                         .font(.callout)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .help(presentation.cancelHelp)
+                .accessibilityLabel(presentation.cancelAccessibilityLabel)
+                .accessibilityHint(presentation.cancelAccessibilityHint)
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
@@ -131,7 +213,7 @@ public struct AnnotationPopoverView: View {
                     appState.createAnnotation(comment: comment, quickPrompts: quickPrompts)
                 } label: {
                     AnnotationPrimaryPillLabel(
-                        title: "添加批注",
+                        title: presentation.saveTitle,
                         systemImage: "checkmark",
                         isEnabled: presentation.canSave
                     )
@@ -139,6 +221,9 @@ public struct AnnotationPopoverView: View {
                 .keyboardShortcut(.return, modifiers: [.command])
                 .buttonStyle(.plain)
                 .disabled(!presentation.canSave)
+                .help(presentation.saveHelp)
+                .accessibilityLabel(presentation.saveAccessibilityLabel)
+                .accessibilityHint(presentation.saveAccessibilityHint)
             }
             .padding(.top, 2)
         }
@@ -152,21 +237,19 @@ public struct AnnotationPopoverView: View {
     }
 
     private func applyQuickPrompt(_ definition: QuickPromptDefinition) {
-        guard quickPrompts.first?.id != definition.id else {
+        guard !quickPrompts.contains(where: { $0.id == definition.id }) else {
             focusCommentEditor()
             return
         }
 
-        comment = quickPrompts.isEmpty
-            ? QuickPromptCatalog.insertedComment(currentComment: comment, definition: definition)
-            : definition.insertedText
-        quickPrompts = [
+        comment = QuickPromptCatalog.insertedComment(currentComment: comment, definition: definition)
+        quickPrompts.append(
             QuickPromptUsage(
                 id: definition.id,
                 label: definition.label,
                 insertedText: definition.insertedText
             )
-        ]
+        )
         focusCommentEditor()
     }
 
