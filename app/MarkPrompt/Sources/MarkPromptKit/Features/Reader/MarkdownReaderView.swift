@@ -597,14 +597,14 @@ public struct MarkdownReaderView: View {
                         )
 
                         if appState.isAnnotationPopoverPresented,
-                           let rect = annotationEntryRect {
+                           let rect = annotationPopoverAnchorRect {
                             let popoverRect = MarkdownReaderLayoutMetrics.annotationPopoverRect(
                                 forAnnotationButtonRect: rect,
                                 avoidingVisibleSelectionRect: appState.readerSelection?.visibleSelectionRect,
                                 viewportSize: proxy.size
                             )
-                            AnnotationPopoverView()
-                                .environmentObject(appState)
+                            AnnotationPopoverHostView(appState: appState)
+                                .frame(width: 380, height: 330)
                                 .background(
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                                         .fill(Color(nsColor: .textBackgroundColor))
@@ -713,6 +713,14 @@ public struct MarkdownReaderView: View {
     }
 
     private var annotationEntryRect: CGRect? {
+        guard !appState.isAnnotationPopoverPresented else {
+            return nil
+        }
+
+        return annotationPopoverAnchorRect
+    }
+
+    private var annotationPopoverAnchorRect: CGRect? {
         guard appState.canCreateAnnotation else {
             return nil
         }

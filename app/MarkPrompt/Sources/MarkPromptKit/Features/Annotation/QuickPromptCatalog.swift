@@ -23,12 +23,26 @@ public enum QuickPromptCatalog {
         QuickPromptDefinition(id: "translate-zh", label: "译为中文", insertedText: "请将这段内容翻译成自然、准确的中文。")
     ]
 
-    public static func insertedComment(
+    public static func usage(for definition: QuickPromptDefinition) -> QuickPromptUsage {
+        QuickPromptUsage(
+            id: definition.id,
+            label: definition.label,
+            insertedText: definition.insertedText
+        )
+    }
+
+    public static func commentAfterSelecting(
         currentComment: String,
+        selectedQuickPrompt: QuickPromptUsage?,
         definition: QuickPromptDefinition
     ) -> String {
         let trimmed = currentComment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            return definition.insertedText
+        }
+
+        if let selectedQuickPrompt,
+           trimmed == selectedQuickPrompt.insertedText.trimmingCharacters(in: .whitespacesAndNewlines) {
             return definition.insertedText
         }
 

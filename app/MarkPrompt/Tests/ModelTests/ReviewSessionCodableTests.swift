@@ -98,17 +98,44 @@ final class ReviewSessionCodableTests: XCTestCase {
         XCTAssertEqual(NoteIDGenerator.id(for: 10), "note_010")
     }
 
-    func testQuickPromptCatalogContainsRequiredPromptsAndAppendsText() {
+    func testQuickPromptCatalogContainsRequiredPromptsAndAppliesSingleSelectionRules() {
         let labels = QuickPromptCatalog.defaults.map(\.label)
+        let polish = QuickPromptCatalog.defaults[0]
+        let rewrite = QuickPromptCatalog.defaults[1]
+        let selectedPolish = QuickPromptCatalog.usage(for: polish)
 
         XCTAssertEqual(labels, ["润色", "重写", "扩写", "缩短", "修复语法", "译为英文", "译为中文"])
         XCTAssertEqual(
-            QuickPromptCatalog.insertedComment(currentComment: "", definition: QuickPromptCatalog.defaults[0]),
-            QuickPromptCatalog.defaults[0].insertedText
+            QuickPromptCatalog.commentAfterSelecting(
+                currentComment: "",
+                selectedQuickPrompt: nil,
+                definition: polish
+            ),
+            polish.insertedText
         )
         XCTAssertEqual(
-            QuickPromptCatalog.insertedComment(currentComment: "用户意见", definition: QuickPromptCatalog.defaults[1]),
-            "用户意见\n\(QuickPromptCatalog.defaults[1].insertedText)"
+            QuickPromptCatalog.commentAfterSelecting(
+                currentComment: polish.insertedText,
+                selectedQuickPrompt: selectedPolish,
+                definition: rewrite
+            ),
+            rewrite.insertedText
+        )
+        XCTAssertEqual(
+            QuickPromptCatalog.commentAfterSelecting(
+                currentComment: "用户意见",
+                selectedQuickPrompt: nil,
+                definition: rewrite
+            ),
+            "用户意见\n\(rewrite.insertedText)"
+        )
+        XCTAssertEqual(
+            QuickPromptCatalog.commentAfterSelecting(
+                currentComment: "\(polish.insertedText)\n请保留现在的语气。",
+                selectedQuickPrompt: selectedPolish,
+                definition: rewrite
+            ),
+            "\(polish.insertedText)\n请保留现在的语气。\n\(rewrite.insertedText)"
         )
     }
 

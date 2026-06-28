@@ -1934,9 +1934,9 @@ final class AppStateFlowTests: XCTestCase {
             ),
             .existingAnnotation
         )
-        XCTAssertEqual(ReaderAnnotationCursorState.annotationReady.cursorKind, .crosshair)
+        XCTAssertEqual(ReaderAnnotationCursorState.annotationReady.cursorKind, .iBeam)
         XCTAssertEqual(ReaderAnnotationCursorState.annotationEditing.cursorKind, .arrow)
-        XCTAssertEqual(ReaderAnnotationCursorState.existingAnnotation.cursorKind, .pointingHand)
+        XCTAssertEqual(ReaderAnnotationCursorState.existingAnnotation.cursorKind, .iBeam)
     }
 
     func testAnnotationEntryButtonPresentationShowsHoverActiveAndPressedFeedback() {
@@ -2013,11 +2013,25 @@ final class AppStateFlowTests: XCTestCase {
                 from: .textSelection,
                 to: .annotationReady,
                 isPointerInsideReader: true,
-                isPointerOverTaskMarker: false
+                isPointerOverTaskMarker: false,
+                isPointerOverSelectableText: true
             ),
             ReaderCursorRefreshDecision(
                 invalidatesCursorRects: true,
-                immediateCursorKind: .crosshair
+                immediateCursorKind: .iBeam
+            )
+        )
+        XCTAssertEqual(
+            ReaderCursorRefreshDecision.decision(
+                from: .textSelection,
+                to: .annotationReady,
+                isPointerInsideReader: true,
+                isPointerOverTaskMarker: false,
+                isPointerOverSelectableText: false
+            ),
+            ReaderCursorRefreshDecision(
+                invalidatesCursorRects: true,
+                immediateCursorKind: .arrow
             )
         )
         XCTAssertEqual(
@@ -2025,7 +2039,8 @@ final class AppStateFlowTests: XCTestCase {
                 from: .annotationReady,
                 to: .annotationEditing,
                 isPointerInsideReader: true,
-                isPointerOverTaskMarker: false
+                isPointerOverTaskMarker: false,
+                isPointerOverSelectableText: true
             ).immediateCursorKind,
             .arrow
         )
@@ -2052,7 +2067,8 @@ final class AppStateFlowTests: XCTestCase {
                 from: .textSelection,
                 to: .annotationReady,
                 isPointerInsideReader: true,
-                isPointerOverTaskMarker: true
+                isPointerOverTaskMarker: true,
+                isPointerOverSelectableText: true
             ),
             ReaderCursorRefreshDecision(
                 invalidatesCursorRects: true,
@@ -2938,7 +2954,7 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertEqual(readyPresentation.saveHelp, "添加批注（⌘↩）；保存后会选中新批注")
         XCTAssertEqual(readyPresentation.saveAccessibilityLabel, "添加批注")
         XCTAssertEqual(readyPresentation.saveAccessibilityHint, "按 ⌘↩ 添加批注；保存后会选中新批注并关闭输入框")
-        XCTAssertEqual(readyPresentation.commentAccessibilityHint, "按 ⌘↩ 添加批注；Esc 取消，快捷批注会追加到此输入框")
+        XCTAssertEqual(readyPresentation.commentAccessibilityHint, "按 ⌘↩ 添加批注；Esc 取消，快捷批注会替换自动内容或补充到自定义意见")
         XCTAssertEqual(readyPresentation.cancelHelp, "取消批注（Esc）；不会保存当前草稿")
         XCTAssertEqual(
             readyPresentation.cancelAccessibilityHint,

@@ -79,7 +79,7 @@ public struct AnnotationPopoverPresentation: Equatable, Sendable {
                 ? "按 ⌘↩ 添加批注；保存后会选中新批注并关闭输入框"
                 : "当前不可添加；批注意见不能为空，输入内容后可按 ⌘↩ 添加批注",
             commentAccessibilityHint: canSave
-                ? "按 ⌘↩ 添加批注；Esc 取消，快捷批注会追加到此输入框"
+                ? "按 ⌘↩ 添加批注；Esc 取消，快捷批注会替换自动内容或补充到自定义意见"
                 : "批注意见不能为空；输入内容后可按 ⌘↩ 添加批注",
             canSave: canSave
         )
@@ -105,7 +105,7 @@ public struct AnnotationPopoverPresentation: Equatable, Sendable {
 public struct AnnotationPopoverView: View {
     @EnvironmentObject private var appState: AppState
     @State private var comment = ""
-    @State private var quickPrompts: [QuickPromptUsage] = []
+    @State private var selectedQuickPrompt: QuickPromptUsage?
     @State private var isCommentFocused = false
     @State private var focusRequest = 0
 
@@ -116,7 +116,7 @@ public struct AnnotationPopoverView: View {
             selectedText: appState.readerSelection?.selectedText ?? "",
             comment: comment
         )
-        let selectedQuickPromptIDs = Set(quickPrompts.map(\.id))
+        let selectedQuickPromptID = selectedQuickPrompt?.id
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center) {
@@ -157,7 +157,7 @@ public struct AnnotationPopoverView: View {
                 ForEach(QuickPromptCatalog.defaults) { definition in
                     AnnotationQuickPromptButton(
                         title: definition.label,
-                        isSelected: selectedQuickPromptIDs.contains(definition.id)
+                        isSelected: selectedQuickPromptID == definition.id
                     ) {
                         applyQuickPrompt(definition)
                     }
@@ -210,7 +210,7 @@ public struct AnnotationPopoverView: View {
                 Spacer()
 
                 Button {
-                    appState.createAnnotation(comment: comment, quickPrompts: quickPrompts)
+                    appState.createAnnotation(comment: comment, quickPrompts: selectedQuickPrompt.map { [$0] } ?? [])
                 } label: {
                     AnnotationPrimaryPillLabel(
                         title: presentation.saveTitle,
@@ -231,25 +231,23 @@ public struct AnnotationPopoverView: View {
         .frame(width: 380, height: 330, alignment: .top)
         .onAppear {
             comment = ""
-            quickPrompts = []
+            selectedQuickPrompt = nil
             focusCommentEditor()
         }
     }
 
     private func applyQuickPrompt(_ definition: QuickPromptDefinition) {
-        guard !quickPrompts.contains(where: { $0.id == definition.id }) else {
+        guard selectedQuickPrompt?.id != definition.id else {
             focusCommentEditor()
             return
         }
 
-        comment = QuickPromptCatalog.insertedComment(currentComment: comment, definition: definition)
-        quickPrompts.append(
-            QuickPromptUsage(
-                id: definition.id,
-                label: definition.label,
-                insertedText: definition.insertedText
-            )
+        comment = QuickPromptCatalog.commentAfterSelecting(
+            currentComment: comment,
+            selectedQuickPrompt: selectedQuickPrompt,
+            definition: definition
         )
+        selectedQuickPrompt = QuickPromptCatalog.usage(for: definition)
         focusCommentEditor()
     }
 
@@ -270,13 +268,13 @@ private struct CommentTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
+        let scrollView = CommentInputScrollView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        let textView = NSTextView(frame: .zero)
+        let textView = CommentInputTextView(frame: .zero)
         textView.delegate = context.coordinator
         textView.drawsBackground = false
         textView.isRichText = false
@@ -298,15 +296,17 @@ private struct CommentTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else {
+        guard let textView = scrollView.documentView as? CommentInputTextView else {
             return
         }
 
         if textView.string != text {
             textView.string = text
+            textView.invalidateCommentCursorRects()
         }
         if textView.font != Self.textFont {
             textView.font = Self.textFont
+            textView.invalidateCommentCursorRects()
         }
 
         guard context.coordinator.lastFocusRequest != focusRequest else {
@@ -348,5 +348,236 @@ private struct CommentTextEditor: NSViewRepresentable {
         func textDidEndEditing(_ notification: Notification) {
             isFocused.wrappedValue = false
         }
+    }
+}
+
+public struct AnnotationPopoverHostView: NSViewRepresentable {
+    @ObservedObject private var appState: AppState
+
+    public init(appState: AppState) {
+        self.appState = appState
+    }
+
+    public func makeNSView(context: Context) -> AnnotationPopoverHostingView {
+        AnnotationPopoverHostingView(
+            rootView: AnyView(
+                AnnotationPopoverView()
+                    .environmentObject(appState)
+            )
+        )
+    }
+
+    public func updateNSView(_ nsView: AnnotationPopoverHostingView, context: Context) {
+        nsView.invalidatePopoverCursorRects()
+    }
+}
+
+public final class AnnotationPopoverHostingView: NSHostingView<AnyView> {
+    private var cursorTrackingArea: NSTrackingArea?
+    private var currentCursorKind: AnnotationPopoverCursorKind?
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        invalidatePopoverCursorRects()
+    }
+
+    public override func layout() {
+        super.layout()
+        invalidatePopoverCursorRects()
+    }
+
+    public override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+        for rect in commentInputCursorRects() {
+            addCursorRect(rect, cursor: .iBeam)
+        }
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTrackingArea {
+            removeTrackingArea(cursorTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        cursorTrackingArea = trackingArea
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        applyCursor(atWindowPoint: event.locationInWindow)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        applyCursor(atWindowPoint: event.locationInWindow)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        currentCursorKind = nil
+    }
+
+    public override func cursorUpdate(with event: NSEvent) {
+        applyCursor(atWindowPoint: event.locationInWindow)
+    }
+
+    public func invalidatePopoverCursorRects() {
+        window?.invalidateCursorRects(for: self)
+        refreshCursorForCurrentMouseLocation()
+    }
+
+    private func refreshCursorForCurrentMouseLocation() {
+        guard let window else {
+            currentCursorKind = nil
+            return
+        }
+
+        applyCursor(atWindowPoint: window.mouseLocationOutsideOfEventStream)
+    }
+
+    private func applyCursor(atWindowPoint windowPoint: NSPoint) {
+        let localPoint = convert(windowPoint, from: nil)
+        guard bounds.contains(localPoint) else {
+            currentCursorKind = nil
+            return
+        }
+
+        let nextCursorKind = isWindowPointInsideCommentInput(windowPoint) ? AnnotationPopoverCursorKind.iBeam : .arrow
+        guard currentCursorKind != nextCursorKind else {
+            return
+        }
+
+        currentCursorKind = nextCursorKind
+        nextCursorKind.nsCursor.set()
+    }
+
+    private func isWindowPointInsideCommentInput(_ windowPoint: NSPoint) -> Bool {
+        commentInputCursorRects().contains { $0.contains(convert(windowPoint, from: nil)) }
+    }
+
+    private func commentInputCursorRects() -> [NSRect] {
+        subviews.flatMap { $0.commentInputCursorRects(convertedTo: self) }
+    }
+}
+
+private enum AnnotationPopoverCursorKind {
+    case arrow
+    case iBeam
+
+    var nsCursor: NSCursor {
+        switch self {
+        case .arrow:
+            return .arrow
+        case .iBeam:
+            return .iBeam
+        }
+    }
+}
+
+private final class CommentInputTextView: NSTextView {
+    private var cursorTrackingArea: NSTrackingArea?
+    private var currentCursorKind: AnnotationPopoverCursorKind?
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .iBeam)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTrackingArea {
+            removeTrackingArea(cursorTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        cursorTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        applyCursor()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        applyCursor()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        currentCursorKind = nil
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        applyCursor()
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        invalidateCommentCursorRects()
+    }
+
+    func invalidateCommentCursorRects() {
+        window?.invalidateCursorRects(for: self)
+        nearestAnnotationPopoverHostingView()?.invalidatePopoverCursorRects()
+        refreshCursorIfPointerIsInside()
+    }
+
+    private func refreshCursorIfPointerIsInside() {
+        guard let window else {
+            return
+        }
+
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(point) else {
+            currentCursorKind = nil
+            return
+        }
+
+        applyCursor()
+    }
+
+    private func applyCursor() {
+        let nextCursorKind = AnnotationPopoverCursorKind.iBeam
+        guard currentCursorKind != nextCursorKind else {
+            return
+        }
+
+        currentCursorKind = nextCursorKind
+        nextCursorKind.nsCursor.set()
+    }
+}
+
+private final class CommentInputScrollView: NSScrollView {
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .iBeam)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.iBeam.set()
+    }
+}
+
+private extension NSView {
+    func commentInputCursorRects(convertedTo targetView: NSView) -> [NSRect] {
+        if let commentInput = self as? CommentInputScrollView {
+            return [targetView.convert(commentInput.convert(commentInput.bounds, to: nil), from: nil)]
+        }
+
+        return subviews.flatMap { $0.commentInputCursorRects(convertedTo: targetView) }
+    }
+
+    func nearestAnnotationPopoverHostingView() -> AnnotationPopoverHostingView? {
+        if let hostingView = self as? AnnotationPopoverHostingView {
+            return hostingView
+        }
+
+        return superview?.nearestAnnotationPopoverHostingView()
     }
 }

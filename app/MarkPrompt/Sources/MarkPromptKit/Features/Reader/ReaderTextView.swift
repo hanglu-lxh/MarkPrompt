@@ -35,11 +35,11 @@ public enum ReaderAnnotationCursorState: Equatable, Sendable {
         case .textSelection:
             return .iBeam
         case .annotationReady:
-            return .crosshair
+            return .iBeam
         case .annotationEditing:
             return .arrow
         case .existingAnnotation:
-            return .pointingHand
+            return .iBeam
         }
     }
 }
@@ -60,7 +60,8 @@ public struct ReaderCursorRefreshDecision: Equatable, Sendable {
         from oldState: ReaderAnnotationCursorState,
         to newState: ReaderAnnotationCursorState,
         isPointerInsideReader: Bool,
-        isPointerOverTaskMarker: Bool
+        isPointerOverTaskMarker: Bool,
+        isPointerOverSelectableText: Bool = false
     ) -> ReaderCursorRefreshDecision {
         guard oldState != newState else {
             return ReaderCursorRefreshDecision(
@@ -78,8 +79,26 @@ public struct ReaderCursorRefreshDecision: Equatable, Sendable {
 
         return ReaderCursorRefreshDecision(
             invalidatesCursorRects: true,
-            immediateCursorKind: isPointerOverTaskMarker ? .pointingHand : newState.cursorKind
+            immediateCursorKind: ReaderCursorRefreshDecision.cursorKind(
+                for: newState,
+                isPointerOverTaskMarker: isPointerOverTaskMarker,
+                isPointerOverSelectableText: isPointerOverSelectableText
+            )
         )
+    }
+
+    private static func cursorKind(
+        for state: ReaderAnnotationCursorState,
+        isPointerOverTaskMarker: Bool,
+        isPointerOverSelectableText: Bool
+    ) -> ReaderCursorKind {
+        if isPointerOverTaskMarker {
+            return .pointingHand
+        }
+        if state == .annotationEditing {
+            return .arrow
+        }
+        return isPointerOverSelectableText ? .iBeam : .arrow
     }
 }
 
@@ -93,6 +112,7 @@ public final class ReaderTextView: NSTextView {
         }
     }
     private var taskMarkerAccessibilityElements: [NSAccessibilityElement] = []
+    private var semanticCursorTrackingArea: NSTrackingArea?
 
     public override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
@@ -291,7 +311,8 @@ public final class ReaderTextView: NSTextView {
             from: oldState,
             to: newState,
             isPointerInsideReader: pointerLocation != nil,
-            isPointerOverTaskMarker: pointerLocation.map { taskMarkerSourceRange(at: $0) != nil } ?? false
+            isPointerOverTaskMarker: pointerLocation.map { taskMarkerSourceRange(at: $0) != nil } ?? false,
+            isPointerOverSelectableText: pointerLocation.map { isPointInsideSelectableText($0) } ?? false
         )
 
         guard decision.invalidatesCursorRects else {
@@ -307,16 +328,112 @@ public final class ReaderTextView: NSTextView {
             return nil
         }
 
-        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        let windowPoint = window.mouseLocationOutsideOfEventStream
+        guard window.contentView?.isWindowPointInsideAnnotationPopover(windowPoint) != true else {
+            return nil
+        }
+
+        let point = convert(windowPoint, from: nil)
         return bounds.contains(point) ? point : nil
     }
 
+    private func cursorKind(at point: NSPoint) -> ReaderCursorKind {
+        if taskMarkerSourceRange(at: point) != nil {
+            return .pointingHand
+        }
+        if annotationCursorState == .annotationEditing {
+            return .arrow
+        }
+        return isPointInsideSelectableText(point) ? .iBeam : .arrow
+    }
+
+    private func isPointInsideSelectableText(_ point: NSPoint) -> Bool {
+        guard let layoutManager,
+              let textContainer,
+              let textStorage,
+              textStorage.length > 0
+        else {
+            return false
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let containerPoint = NSPoint(
+            x: point.x - textContainerOrigin.x,
+            y: point.y - textContainerOrigin.y
+        )
+        let glyphIndex = layoutManager.glyphIndex(
+            for: containerPoint,
+            in: textContainer,
+            fractionOfDistanceThroughGlyph: nil
+        )
+        guard glyphIndex < layoutManager.numberOfGlyphs else {
+            return false
+        }
+
+        let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        guard characterIndex < textStorage.length else {
+            return false
+        }
+        let character = (textStorage.string as NSString).substring(with: NSRange(location: characterIndex, length: 1))
+        guard character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return false
+        }
+
+        var glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyphIndex, length: 1),
+            in: textContainer
+        )
+        glyphRect.origin.x += textContainerOrigin.x
+        glyphRect.origin.y += textContainerOrigin.y
+        return glyphRect.insetBy(dx: -1, dy: -2).contains(point)
+    }
+
     public override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: annotationCursorState.cursorKind.nsCursor)
+        addCursorRect(bounds, cursor: .arrow)
         for hitRect in taskMarkerHitRects() {
             addCursorRect(hitRect, cursor: .pointingHand)
         }
+    }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let semanticCursorTrackingArea {
+            removeTrackingArea(semanticCursorTrackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        semanticCursorTrackingArea = trackingArea
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        applySemanticCursor(for: event)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        applySemanticCursor(for: event)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
+
+    public override func cursorUpdate(with event: NSEvent) {
+        applySemanticCursor(for: event)
+    }
+
+    private func applySemanticCursor(for event: NSEvent) {
+        guard window?.contentView?.isWindowPointInsideAnnotationPopover(event.locationInWindow) != true else {
+            return
+        }
+
+        let point = convert(event.locationInWindow, from: nil)
+        cursorKind(at: point).nsCursor.set()
     }
 
     public override func mouseDown(with event: NSEvent) {
@@ -586,6 +703,17 @@ private extension ReaderCursorKind {
         case .arrow:
             return .arrow
         }
+    }
+}
+
+private extension NSView {
+    func isWindowPointInsideAnnotationPopover(_ windowPoint: NSPoint) -> Bool {
+        if let popover = self as? AnnotationPopoverHostingView {
+            let localPoint = popover.convert(windowPoint, from: nil)
+            return popover.bounds.contains(localPoint)
+        }
+
+        return subviews.contains { $0.isWindowPointInsideAnnotationPopover(windowPoint) }
     }
 }
 
