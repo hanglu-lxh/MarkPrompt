@@ -35,6 +35,11 @@ build/
 !samples/**/*.review.json
 !samples/**/*.prompt.md
 
+# Generated reader snapshot artifacts
+docs/assets/reader-fixture-snapshots/
+docs/assets/reader-fixture-snapshots-dark/
+docs/assets/reader-real-report-snapshot/
+
 # Logs and temporary files
 *.log
 tmp/
@@ -43,4 +48,3 @@ temp/
 # Editor
 .vscode/
 .idea/
-
