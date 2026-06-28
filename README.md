@@ -126,21 +126,8 @@ gh release create v1.1 build/MarkPrompt-1.1.dmg \
 ```text
 .
 ├── app/MarkPrompt/              # Swift Package 版 macOS 应用、MarkPromptKit、测试和打包脚本
-├── docs/                        # 产品文档、阅读器验收记录、原型图和渲染快照资产
+├── docs/                        # README 截图和本地渲染快照资产
 ├── samples/                     # 本地 Markdown 样例和 reader fixture
 ├── scripts/                     # 仓库级辅助脚本
-├── build/                       # 本地打包产物目录
-└── .github/                     # GitHub 配置
+└── build/                       # 本地打包产物目录
 ```
-
-## 参考资料
-
-这些文档保留为产品和技术背景参考，当前状态请优先以 `app/MarkPrompt` 的实现和测试为准。
-
-- [产品需求文档](docs/MarkPrompt_PRD.md)
-- [产品交互说明](docs/MarkPrompt_interaction_spec.md)
-- [技术开发文档](docs/MarkPrompt_technical_development.md)
-- [Workspace 文件规划](docs/MarkPrompt_workspace_plan.md)
-- [阅读器基准记录](docs/MarkPrompt_reader_benchmark.md)
-- [阅读器 fixture 审计](docs/MarkPrompt_reader_fixture_audit.md)
-- [V4 原型图](docs/assets/markprompt_interaction_prototype_v4.png)
