@@ -1,7 +1,89 @@
 import AppKit
 import SwiftUI
 
+public struct ReaderScrollDiagnostic: Equatable, Sendable, CustomStringConvertible {
+    public enum Event: String, Sendable {
+        case headingTargetReceived
+        case headingRangeMissing
+        case headingScrollApplied
+        case headingScrollFallback
+        case headingTargetConsumed
+    }
+
+    public var event: Event
+    public var headingID: UUID?
+    public var renderedRange: RenderedTextRange?
+    public var visibleBefore: CGRect?
+    public var visibleAfter: CGRect?
+    public var targetRect: CGRect?
+    public var targetOrigin: CGPoint?
+    public var expectedTopPadding: CGFloat?
+    public var actualTopPadding: CGFloat?
+    public var message: String
+
+    public init(
+        event: Event,
+        headingID: UUID? = nil,
+        renderedRange: RenderedTextRange? = nil,
+        visibleBefore: CGRect? = nil,
+        visibleAfter: CGRect? = nil,
+        targetRect: CGRect? = nil,
+        targetOrigin: CGPoint? = nil,
+        expectedTopPadding: CGFloat? = nil,
+        actualTopPadding: CGFloat? = nil,
+        message: String = ""
+    ) {
+        self.event = event
+        self.headingID = headingID
+        self.renderedRange = renderedRange
+        self.visibleBefore = visibleBefore
+        self.visibleAfter = visibleAfter
+        self.targetRect = targetRect
+        self.targetOrigin = targetOrigin
+        self.expectedTopPadding = expectedTopPadding
+        self.actualTopPadding = actualTopPadding
+        self.message = message
+    }
+
+    public var topPaddingDelta: CGFloat? {
+        guard let expectedTopPadding, let actualTopPadding else {
+            return nil
+        }
+
+        return actualTopPadding - expectedTopPadding
+    }
+
+    public var description: String {
+        [
+            "event=\(event.rawValue)",
+            headingID.map { "headingID=\($0.uuidString)" },
+            renderedRange.map { "range=\($0.location)..<\($0.upperBound)" },
+            visibleBefore.map { "visibleBefore=\(Self.describe(rect: $0))" },
+            visibleAfter.map { "visibleAfter=\(Self.describe(rect: $0))" },
+            targetRect.map { "targetRect=\(Self.describe(rect: $0))" },
+            targetOrigin.map { "targetOrigin=(x:\(Self.describe($0.x)),y:\(Self.describe($0.y)))" },
+            expectedTopPadding.map { "expectedTopPadding=\(Self.describe($0))" },
+            actualTopPadding.map { "actualTopPadding=\(Self.describe($0))" },
+            topPaddingDelta.map { "delta=\(Self.describe($0))" },
+            message.isEmpty ? nil : "message=\(message)"
+        ]
+            .compactMap(\.self)
+            .joined(separator: " ")
+    }
+
+    private static func describe(rect: CGRect) -> String {
+        "(x:\(describe(rect.minX)),y:\(describe(rect.minY)),w:\(describe(rect.width)),h:\(describe(rect.height)))"
+    }
+
+    private static func describe(_ value: CGFloat) -> String {
+        String(format: "%.2f", value)
+    }
+}
+
 public enum MarkdownReaderLayoutMetrics {
+    public static let visibleHeadingProbeOffset: CGFloat = 72
+    public static let headingScrollTopPadding: CGFloat = 64
+
     public static func renderSignature(for attributedText: NSAttributedString) -> String {
         var hasher = Hasher()
         hasher.combine(attributedText.string)
@@ -156,6 +238,23 @@ public enum MarkdownReaderLayoutMetrics {
             .key
     }
 
+    public static func scrollOrigin(
+        currentOrigin: CGPoint,
+        targetRect: CGRect,
+        viewportSize: CGSize,
+        documentSize: CGSize,
+        topPadding: CGFloat = headingScrollTopPadding
+    ) -> CGPoint {
+        let maximumX = max(0, documentSize.width - viewportSize.width)
+        let maximumY = max(0, documentSize.height - viewportSize.height)
+        let targetY = targetRect.minY - topPadding
+
+        return CGPoint(
+            x: min(max(0, currentOrigin.x), maximumX),
+            y: min(max(0, targetY), maximumY)
+        )
+    }
+
     public static func annotationButtonRect(
         forVisibleSelectionRect selectionRect: CGRect,
         viewportSize: CGSize,
@@ -248,6 +347,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
     public var onSelectionChange: (ReaderSelection?) -> Void
     public var onScrollTargetConsumed: (UUID?, RenderedTextRange?) -> Void
     public var onVisibleHeadingChange: (UUID?) -> Void
+    public var onScrollDiagnostic: (ReaderScrollDiagnostic) -> Void
     public var onTaskMarkerToggle: (SourceTextRange) -> Bool
     public var onTaskMarkerStatusChange: (SourceTextRange, String) -> Bool
     public var onTaskMarkerUndo: () -> Bool
@@ -265,6 +365,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         onSelectionChange: @escaping (ReaderSelection?) -> Void,
         onScrollTargetConsumed: @escaping (UUID?, RenderedTextRange?) -> Void = { _, _ in },
         onVisibleHeadingChange: @escaping (UUID?) -> Void = { _ in },
+        onScrollDiagnostic: @escaping (ReaderScrollDiagnostic) -> Void = { _ in },
         onTaskMarkerToggle: @escaping (SourceTextRange) -> Bool = { _ in false },
         onTaskMarkerStatusChange: @escaping (SourceTextRange, String) -> Bool = { _, _ in false },
         onTaskMarkerUndo: @escaping () -> Bool = { false }
@@ -281,6 +382,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         self.onSelectionChange = onSelectionChange
         self.onScrollTargetConsumed = onScrollTargetConsumed
         self.onVisibleHeadingChange = onVisibleHeadingChange
+        self.onScrollDiagnostic = onScrollDiagnostic
         self.onTaskMarkerToggle = onTaskMarkerToggle
         self.onTaskMarkerStatusChange = onTaskMarkerStatusChange
         self.onTaskMarkerUndo = onTaskMarkerUndo
@@ -332,6 +434,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
 
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onVisibleHeadingChange = onVisibleHeadingChange
+        context.coordinator.onScrollDiagnostic = onScrollDiagnostic
         context.coordinator.onAnnotationButtonPress = onAnnotationButtonPress
         textView.annotationCursorState = annotationCursorState
         textView.onTaskMarkerClick = onTaskMarkerToggle
@@ -382,15 +485,47 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         }
 
         if let scrollTargetHeadingID,
-           context.coordinator.lastScrollTargetHeadingID != scrollTargetHeadingID,
            let renderedRange = sourceMap.headingRenderRanges[scrollTargetHeadingID] {
-            textView.scrollRangeToVisible(renderedRange.nsRange)
+            context.coordinator.emitScrollDiagnostic(ReaderScrollDiagnostic(
+                event: .headingTargetReceived,
+                headingID: scrollTargetHeadingID,
+                renderedRange: renderedRange,
+                visibleBefore: scrollView.documentVisibleRect
+            ))
+            context.coordinator.scrollHeadingToVisibleTop(
+                renderedRange,
+                headingID: scrollTargetHeadingID,
+                in: scrollView
+            )
             context.coordinator.lastScrollTargetHeadingID = scrollTargetHeadingID
             context.coordinator.emitVisibleHeading(from: scrollView)
             let consumedHeadingID = scrollTargetHeadingID
-            DispatchQueue.main.async {
+            let coordinator = context.coordinator
+            Task { @MainActor [weak scrollView] in
+                if let scrollView,
+                   coordinator.lastScrollTargetHeadingID == consumedHeadingID {
+                    coordinator.scrollHeadingToVisibleTop(
+                        renderedRange,
+                        headingID: consumedHeadingID,
+                        in: scrollView
+                    )
+                    coordinator.emitVisibleHeading(from: scrollView)
+                }
+                coordinator.emitScrollDiagnostic(ReaderScrollDiagnostic(
+                    event: .headingTargetConsumed,
+                    headingID: consumedHeadingID,
+                    renderedRange: renderedRange,
+                    visibleAfter: scrollView?.documentVisibleRect
+                ))
                 onScrollTargetConsumed(consumedHeadingID, nil)
             }
+        } else if let scrollTargetHeadingID {
+            context.coordinator.emitScrollDiagnostic(ReaderScrollDiagnostic(
+                event: .headingRangeMissing,
+                headingID: scrollTargetHeadingID,
+                visibleBefore: scrollView.documentVisibleRect,
+                message: "No headingRenderRanges entry for requested heading."
+            ))
         } else if scrollTargetHeadingID == nil {
             context.coordinator.lastScrollTargetHeadingID = nil
         }
@@ -502,6 +637,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         var sourceMap = MarkdownSourceMap()
         var onSelectionChange: (ReaderSelection?) -> Void = { _ in }
         var onVisibleHeadingChange: (UUID?) -> Void = { _ in }
+        var onScrollDiagnostic: (ReaderScrollDiagnostic) -> Void = { _ in }
         var onAnnotationButtonPress: () -> Void = {}
         var lastRenderSignature = ""
         var lastHighlightSignature = ""
@@ -659,6 +795,63 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
             }
         }
 
+        @discardableResult
+        func scrollHeadingToVisibleTop(
+            _ renderedRange: RenderedTextRange,
+            headingID: UUID? = nil,
+            in scrollView: NSScrollView
+        ) -> ReaderScrollDiagnostic {
+            let visibleBefore = scrollView.documentVisibleRect
+            guard let textView,
+                  let targetRect = textRect(for: renderedRange.nsRange, in: textView)
+            else {
+                textView?.scrollRangeToVisible(renderedRange.nsRange)
+                let diagnostic = ReaderScrollDiagnostic(
+                    event: .headingScrollFallback,
+                    headingID: headingID,
+                    renderedRange: renderedRange,
+                    visibleBefore: visibleBefore,
+                    visibleAfter: scrollView.documentVisibleRect,
+                    message: "Fell back to scrollRangeToVisible because target rect was unavailable."
+                )
+                emitScrollDiagnostic(diagnostic)
+                return diagnostic
+            }
+
+            let targetOrigin = MarkdownReaderLayoutMetrics.scrollOrigin(
+                currentOrigin: scrollView.contentView.bounds.origin,
+                targetRect: targetRect,
+                viewportSize: scrollView.contentView.bounds.size,
+                documentSize: textView.frame.size
+            )
+            textView.scroll(targetOrigin)
+            let visibleAfter = scrollView.documentVisibleRect
+            let actualTopPadding = targetRect.minY - visibleAfter.minY
+            let diagnostic = ReaderScrollDiagnostic(
+                event: .headingScrollApplied,
+                headingID: headingID,
+                renderedRange: renderedRange,
+                visibleBefore: visibleBefore,
+                visibleAfter: visibleAfter,
+                targetRect: targetRect,
+                targetOrigin: targetOrigin,
+                expectedTopPadding: MarkdownReaderLayoutMetrics.headingScrollTopPadding,
+                actualTopPadding: actualTopPadding
+            )
+            emitScrollDiagnostic(diagnostic)
+            return diagnostic
+        }
+
+        func emitScrollDiagnostic(_ diagnostic: ReaderScrollDiagnostic) {
+            onScrollDiagnostic(diagnostic)
+
+            guard ProcessInfo.processInfo.environment["MARKPROMPT_SCROLL_DIAGNOSTICS"] == "1" else {
+                return
+            }
+
+            print("[MarkPromptScroll] \(diagnostic)")
+        }
+
         private func visibleTextLocation(in textView: NSTextView, scrollView: NSScrollView) -> Int? {
             guard let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer,
@@ -670,7 +863,7 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
             layoutManager.ensureLayout(for: textContainer)
             let visibleRect = scrollView.documentVisibleRect
             let containerOrigin = textView.textContainerOrigin
-            let probeY = max(0, visibleRect.minY - containerOrigin.y + 72)
+            let probeY = max(0, visibleRect.minY - containerOrigin.y + MarkdownReaderLayoutMetrics.visibleHeadingProbeOffset)
             let probePoint = NSPoint(x: 4, y: probeY)
             let characterIndex = layoutManager.characterIndex(
                 for: probePoint,
@@ -678,6 +871,39 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
                 fractionOfDistanceBetweenInsertionPoints: nil
             )
             return min(characterIndex, max(0, (textView.string as NSString).length - 1))
+        }
+
+        private func textRect(for range: NSRange, in textView: NSTextView) -> CGRect? {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer
+            else {
+                return nil
+            }
+
+            let textLength = (textView.string as NSString).length
+            guard range.location != NSNotFound,
+                  range.location >= 0,
+                  range.location < textLength
+            else {
+                return nil
+            }
+
+            let effectiveLength = max(1, min(range.length, textLength - range.location))
+            let effectiveRange = NSRange(location: range.location, length: effectiveLength)
+            layoutManager.ensureLayout(for: textContainer)
+
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: effectiveRange,
+                actualCharacterRange: nil
+            )
+            guard glyphRange.length > 0 else {
+                return nil
+            }
+
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textView.textContainerOrigin.x
+            rect.origin.y += textView.textContainerOrigin.y
+            return rect
         }
 
         private func visibleSelectionRect(in textView: NSTextView, range: NSRange) -> CGRect? {

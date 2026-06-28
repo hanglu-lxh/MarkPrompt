@@ -211,6 +211,83 @@ final class ReaderFixtureRenderingTests: XCTestCase {
         XCTAssertLessThanOrEqual(scrolledButtonRect.maxY, scrollView.bounds.height - 12)
     }
 
+    func testHeadingScrollTargetEmitsClickedHeadingAfterTextKitLayout() throws {
+        let fixtureURL = try XCTUnwrap(try fixtureURLs().first { $0.lastPathComponent == "08_long_outline.md" })
+        let source = try String(contentsOf: fixtureURL, encoding: .utf8)
+        let document = MarkdownParser().parse(source, fileURL: fixtureURL)
+        let targetHeading = try XCTUnwrap(document.outline.flattened().first { $0.title == "4.2 Current Section" })
+        let targetRange = try XCTUnwrap(document.renderModel.sourceMap.headingRenderRanges[targetHeading.id])
+
+        let storage = NSTextStorage(attributedString: document.renderModel.attributedText)
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 520, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        textContainer.widthTracksTextView = false
+        layoutManager.addTextContainer(textContainer)
+        storage.addLayoutManager(layoutManager)
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 620, height: 360))
+        let textView = ReaderTextView(
+            frame: NSRect(x: 0, y: 0, width: 620, height: 360),
+            textContainer: textContainer
+        )
+        textView.textContainerInset = NSSize(width: 48, height: 34)
+        scrollView.documentView = textView
+
+        layoutManager.ensureLayout(for: textContainer)
+        textView.frame.size.height = layoutManager.usedRect(for: textContainer).height
+            + textView.textContainerInset.height * 2
+            + 48
+
+        let coordinator = MarkdownTextViewRepresentable.Coordinator()
+        coordinator.textView = textView
+        coordinator.sourceMap = document.renderModel.sourceMap
+
+        var emittedHeadingID: UUID?
+        coordinator.onVisibleHeadingChange = { headingID in
+            emittedHeadingID = headingID
+        }
+
+        var emittedDiagnostics: [ReaderScrollDiagnostic] = []
+        coordinator.onScrollDiagnostic = { diagnostic in
+            emittedDiagnostics.append(diagnostic)
+        }
+
+        let scrollDiagnostic = coordinator.scrollHeadingToVisibleTop(
+            targetRange,
+            headingID: targetHeading.id,
+            in: scrollView
+        )
+        coordinator.emitVisibleHeading(from: scrollView)
+        waitForMainQueue()
+
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: targetRange.nsRange,
+            actualCharacterRange: nil
+        )
+        var targetRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        targetRect.origin.x += textView.textContainerOrigin.x
+        targetRect.origin.y += textView.textContainerOrigin.y
+        let visibleRect = scrollView.documentVisibleRect
+
+        XCTAssertEqual(emittedHeadingID, targetHeading.id)
+        XCTAssertEqual(scrollDiagnostic.event, .headingScrollApplied)
+        XCTAssertEqual(scrollDiagnostic.headingID, targetHeading.id)
+        XCTAssertEqual(scrollDiagnostic.renderedRange, targetRange)
+        XCTAssertEqual(
+            try XCTUnwrap(scrollDiagnostic.actualTopPadding),
+            MarkdownReaderLayoutMetrics.headingScrollTopPadding,
+            accuracy: 1
+        )
+        XCTAssertEqual(try XCTUnwrap(scrollDiagnostic.topPaddingDelta), 0, accuracy: 1)
+        XCTAssertEqual(emittedDiagnostics.last, scrollDiagnostic)
+        XCTAssertEqual(
+            targetRect.minY - visibleRect.minY,
+            MarkdownReaderLayoutMetrics.headingScrollTopPadding,
+            accuracy: 1
+        )
+    }
+
     func testRenderSignatureChangesWhenTextBecomesNativeTableBlock() {
         let plain = NSAttributedString(string: "Model\n")
         let table = NSTextTable()
@@ -1187,6 +1264,31 @@ final class ReaderFixtureRenderingTests: XCTestCase {
             ),
             laterOutlineHeading.id
         )
+
+        let headingScrollOrigin = MarkdownReaderLayoutMetrics.scrollOrigin(
+            currentOrigin: CGPoint(x: 96, y: 120),
+            targetRect: CGRect(x: 140, y: 860, width: 360, height: 44),
+            viewportSize: CGSize(width: 520, height: 640),
+            documentSize: CGSize(width: 900, height: 2_200)
+        )
+        XCTAssertEqual(headingScrollOrigin.x, 96, accuracy: 0.01)
+        XCTAssertEqual(
+            860 - headingScrollOrigin.y,
+            MarkdownReaderLayoutMetrics.headingScrollTopPadding,
+            accuracy: 0.01
+        )
+        XCTAssertLessThan(
+            MarkdownReaderLayoutMetrics.headingScrollTopPadding,
+            MarkdownReaderLayoutMetrics.visibleHeadingProbeOffset
+        )
+
+        let bottomClampedOrigin = MarkdownReaderLayoutMetrics.scrollOrigin(
+            currentOrigin: .zero,
+            targetRect: CGRect(x: 140, y: 2_180, width: 360, height: 44),
+            viewportSize: CGSize(width: 520, height: 640),
+            documentSize: CGSize(width: 900, height: 2_200)
+        )
+        XCTAssertEqual(bottomClampedOrigin.y, 1_560, accuracy: 0.01)
 
         let frontmatter = try XCTUnwrap(documents["09_frontmatter_html.md"])
         XCTAssertFalse(frontmatter.renderModel.renderedPlainText.hasPrefix("────────────"))

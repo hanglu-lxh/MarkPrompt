@@ -28,6 +28,24 @@ cd app/MarkPrompt
 swift run MarkPrompt
 ```
 
+本地打包测试：
+
+```bash
+cd app/MarkPrompt
+./scripts/package_app.sh
+```
+
+打包产物会生成到仓库根目录的 `build/MarkPrompt.app`。
+
+生成 DMG：
+
+```bash
+cd app/MarkPrompt
+./scripts/package_dmg.sh
+```
+
+DMG 会生成到仓库根目录的 `build/MarkPrompt-1.0.dmg`。
+
 运行后可通过工具栏或 `⌘O` 打开：
 
 ```text

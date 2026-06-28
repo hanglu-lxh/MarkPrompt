@@ -20,7 +20,14 @@ let package = Package(
             name: "MarkPrompt",
             dependencies: ["MarkPromptKit"],
             path: "Sources/MarkPrompt",
-            exclude: ["App/Info.plist"],
+            exclude: [
+                "App/Info.plist",
+                "Resources/AppIcon.iconset"
+            ],
+            resources: [
+                .copy("Resources/AppIcon.icns"),
+                .copy("Resources/AppIconSource.png")
+            ],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",

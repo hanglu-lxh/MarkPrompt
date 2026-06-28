@@ -3153,6 +3153,37 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertEqual(state.currentDocument?.sourceHash, document.sourceHash)
     }
 
+    func testPendingHeadingTargetIgnoresIntermediateVisibleHeadingFromPreviousSection() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceURL = temp.appendingPathComponent("sample_prd.md")
+        try sampleSource().write(to: sourceURL, atomically: true, encoding: .utf8)
+        let state = AppState()
+
+        state.openDocument(at: sourceURL)
+        let document = try XCTUnwrap(state.currentDocument)
+        let previousHeading = try XCTUnwrap(document.outline.flattened().first { $0.title == "示例 PRD" })
+        let targetHeading = try XCTUnwrap(document.outline.flattened().first { $0.title == "核心价值" })
+
+        state.selectHeading(targetHeading)
+        XCTAssertEqual(state.scrollTargetHeadingID, targetHeading.id)
+        XCTAssertEqual(state.currentReadingHeadingID, targetHeading.id)
+
+        state.updateVisibleHeading(previousHeading.id)
+
+        XCTAssertEqual(state.scrollTargetHeadingID, targetHeading.id)
+        XCTAssertEqual(state.currentReadingHeadingID, targetHeading.id)
+
+        state.clearScrollTarget(headingID: targetHeading.id, range: nil)
+        state.updateVisibleHeading(previousHeading.id)
+
+        XCTAssertNil(state.scrollTargetHeadingID)
+        XCTAssertEqual(state.currentReadingHeadingID, previousHeading.id)
+    }
+
     func testOpeningAnotherDocumentFlushesPendingAnnotationAutosaveForPreviousDocument() async throws {
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -3775,6 +3806,86 @@ final class AppStateFlowTests: XCTestCase {
         XCTAssertEqual(restoredSession.notes.count, 1)
         XCTAssertEqual(restoredSession.notes.first?.comment, "快速关闭前也要保存。")
         XCTAssertEqual(restoredSession.notes.first?.includeInPrompt, false)
+    }
+
+    func testClosingCurrentDocumentFlushesAutosaveAndClearsDocumentState() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceURL = temp.appendingPathComponent("active.md")
+        let supportURL = temp.appendingPathComponent("Support", isDirectory: true)
+        let locator = SidecarFileLocator(applicationSupportDirectory: supportURL)
+        try sampleSource(title: "当前阅读", heading: "关闭文档")
+            .write(to: sourceURL, atomically: true, encoding: .utf8)
+
+        let state = AppState(reviewSessionStore: ReviewSessionStore(locator: locator))
+        XCTAssertFalse(state.closeCurrentDocument())
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let document = try XCTUnwrap(state.currentDocument)
+        let selection = try makeSelection(text: "核心价值", in: document)
+        state.updateSelection(selection)
+        state.createAnnotation(comment: "关闭当前文档前保存。", quickPrompts: [])
+
+        XCTAssertEqual(state.saveState, .saving)
+        XCTAssertFalse(state.promptPreview.prompt.isEmpty)
+        XCTAssertNotNil(state.reviewSession)
+        XCTAssertNotNil(state.selectedNoteID)
+        XCTAssertNotNil(state.scrollTargetRange)
+
+        XCTAssertTrue(state.closeCurrentDocument())
+
+        XCTAssertNil(state.currentDocument)
+        XCTAssertNil(state.reviewSession)
+        XCTAssertNil(state.readerSelection)
+        XCTAssertNil(state.selectedNoteID)
+        XCTAssertEqual(state.promptPreview, .empty)
+        XCTAssertEqual(state.saveState, .idle)
+        XCTAssertEqual(state.panelMode, .annotations)
+        XCTAssertNil(state.scrollTargetHeadingID)
+        XCTAssertNil(state.scrollTargetRange)
+        XCTAssertNil(state.currentReadingHeadingID)
+        XCTAssertFalse(state.isAnnotationPopoverPresented)
+
+        let restoredSession = ReviewSessionStore(locator: locator).loadSessionResult(for: document).session
+        XCTAssertEqual(restoredSession.notes.count, 1)
+        XCTAssertEqual(restoredSession.notes.first?.comment, "关闭当前文档前保存。")
+    }
+
+    func testClosingCurrentDocumentKeepsDocumentWhenAnnotationSaveFails() throws {
+        let temp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let sourceURL = temp.appendingPathComponent("active.md")
+        let supportURL = temp.appendingPathComponent("Support")
+        let locator = SidecarFileLocator(applicationSupportDirectory: supportURL)
+        try sampleSource(title: "当前阅读", heading: "保存失败")
+            .write(to: sourceURL, atomically: true, encoding: .utf8)
+        try "fallback root is not a directory".write(to: supportURL, atomically: true, encoding: .utf8)
+
+        let state = AppState(reviewSessionStore: ReviewSessionStore(locator: locator))
+        XCTAssertTrue(state.openDocument(at: sourceURL))
+        let sidecarURL = locator.reviewSessionURL(for: sourceURL)
+        try FileManager.default.createDirectory(at: sidecarURL, withIntermediateDirectories: true)
+        let selection = try makeSelection(text: "核心价值", in: XCTUnwrap(state.currentDocument))
+        state.updateSelection(selection)
+        state.createAnnotation(comment: "保存失败时不能关闭。", quickPrompts: [])
+
+        state.saveReviewSessionNow()
+        let failureState = state.saveState
+        guard case let .failed(message) = failureState else {
+            return XCTFail("Expected sidecar save failure, got \(failureState).")
+        }
+        XCTAssertTrue(message.hasPrefix("批注保存失败："))
+
+        XCTAssertFalse(state.closeCurrentDocument())
+
+        XCTAssertEqual(state.currentDocument?.displayName, "active.md")
+        XCTAssertEqual(state.reviewSession?.notes.first?.comment, "保存失败时不能关闭。")
+        XCTAssertEqual(state.saveState, failureState)
     }
 
     func testStaleSelectionFromPreviousDocumentDoesNotPolluteNewDocument() throws {

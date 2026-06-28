@@ -220,6 +220,7 @@ public final class AppState: ObservableObject {
     private var importGeneration = 0
     private var dismissedClipboardMarkdownPath: String?
     private var taskMarkerUndoStack: [TaskMarkerUndo] = []
+    private var pendingOutlineScrollHeadingID: UUID?
 
     public var canUndoTaskMarkerToggle: Bool {
         !taskMarkerUndoStack.isEmpty
@@ -513,6 +514,40 @@ public final class AppState: ObservableObject {
         return openDocument(at: fileURL)
     }
 
+    @discardableResult
+    public func closeCurrentDocument() -> Bool {
+        guard currentDocument != nil else {
+            return false
+        }
+        if currentAnnotationSaveFailureState() != nil {
+            return false
+        }
+        if autosaveTask != nil {
+            saveReviewSessionNow()
+            if case .failed = saveState {
+                return false
+            }
+        }
+
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        currentDocument = nil
+        reviewSession = nil
+        readerSelection = nil
+        selectedNoteID = nil
+        promptPreview = .empty
+        saveState = .idle
+        panelMode = .annotations
+        scrollTargetHeadingID = nil
+        scrollTargetRange = nil
+        pendingOutlineScrollHeadingID = nil
+        currentReadingHeadingID = nil
+        isAnnotationPopoverPresented = false
+        taskMarkerUndoStack.removeAll()
+        refreshClipboardMarkdownCandidate()
+        return true
+    }
+
     private func openDocumentWithoutFlushingAutosave(at url: URL) -> Bool {
         do {
             let document = try documentLoader.loadDocument(from: url)
@@ -526,6 +561,7 @@ public final class AppState: ObservableObject {
             readerSelection = nil
             isAnnotationPopoverPresented = false
             taskMarkerUndoStack.removeAll()
+            pendingOutlineScrollHeadingID = nil
             scrollTargetHeadingID = topHeadingID
             scrollTargetRange = topHeadingID == nil ? RenderedTextRange(location: 0, length: 0) : nil
             currentReadingHeadingID = topHeadingID
@@ -559,12 +595,9 @@ public final class AppState: ObservableObject {
         }
 
         clearTransientAnnotationFailures()
-        guard scrollTargetHeadingID != heading.id || scrollTargetRange != nil else {
-            return
-        }
-
         scrollTargetHeadingID = heading.id
         scrollTargetRange = nil
+        pendingOutlineScrollHeadingID = heading.id
         currentReadingHeadingID = heading.id
         readerSelection = nil
         isAnnotationPopoverPresented = false
@@ -574,6 +607,12 @@ public final class AppState: ObservableObject {
     public func updateVisibleHeading(_ headingID: UUID?) {
         if let headingID, !visibleHeadingMatchesCurrentDocument(headingID) {
             return
+        }
+        if let pendingOutlineScrollHeadingID,
+           scrollTargetHeadingID == pendingOutlineScrollHeadingID {
+            guard headingID == pendingOutlineScrollHeadingID else {
+                return
+            }
         }
         if headingID == nil, scrollTargetHeadingID != nil || scrollTargetRange != nil {
             return
@@ -611,6 +650,7 @@ public final class AppState: ObservableObject {
             clearTransientAnnotationFailures()
             if scrollTargetHeadingID != nil {
                 scrollTargetHeadingID = nil
+                pendingOutlineScrollHeadingID = nil
             }
             if scrollTargetRange != nil {
                 scrollTargetRange = nil
@@ -622,6 +662,7 @@ public final class AppState: ObservableObject {
         clearTransientAnnotationFailures()
         if scrollTargetHeadingID != nil {
             scrollTargetHeadingID = nil
+            pendingOutlineScrollHeadingID = nil
         }
         if scrollTargetRange != nil {
             scrollTargetRange = nil
@@ -796,6 +837,7 @@ public final class AppState: ObservableObject {
 
         scrollTargetHeadingID = nil
         scrollTargetRange = nil
+        pendingOutlineScrollHeadingID = nil
     }
 
     public func clearScrollTarget(headingID: UUID?, range: RenderedTextRange?) {
@@ -909,6 +951,7 @@ public final class AppState: ObservableObject {
         reviewSession = session
         selectedNoteID = noteID
         scrollTargetRange = anchor.renderedRange
+        pendingOutlineScrollHeadingID = nil
         readerSelection = nil
         isAnnotationPopoverPresented = false
         markReviewSessionChanged()
@@ -927,11 +970,13 @@ public final class AppState: ObservableObject {
         if let renderedRange = note.anchor.renderedRange, note.status != .anchorLost {
             scrollTargetRange = renderedRange
             scrollTargetHeadingID = nil
+            pendingOutlineScrollHeadingID = nil
             clearTransientAnnotationFailures()
             clearTransientImportFailure()
         } else {
             scrollTargetHeadingID = nil
             scrollTargetRange = nil
+            pendingOutlineScrollHeadingID = nil
             saveState = currentAnnotationSaveFailureState() ?? .failed(Self.anchorLostSelectionMessage)
         }
     }
@@ -988,6 +1033,7 @@ public final class AppState: ObservableObject {
         if deletedWasSelected || scrollTargetRange == deletedNote.anchor.renderedRange {
             scrollTargetHeadingID = nil
             scrollTargetRange = nil
+            pendingOutlineScrollHeadingID = nil
         }
         if let deletedRange = deletedNote.anchor.renderedRange,
            let selectionRange = readerSelection?.renderedRange,
@@ -1372,6 +1418,7 @@ public final class AppState: ObservableObject {
         isAnnotationPopoverPresented = false
         scrollTargetHeadingID = nil
         scrollTargetRange = nil
+        pendingOutlineScrollHeadingID = nil
         currentReadingHeadingID = restoredHeadingID(
             in: updatedDocument.outline,
             from: visibleHeadingReference

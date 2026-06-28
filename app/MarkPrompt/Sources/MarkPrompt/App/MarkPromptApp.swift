@@ -23,6 +23,7 @@ struct MarkPromptApp: App {
                     } else {
                         appState.openLastDocumentIfAvailable()
                     }
+                    MarkPromptCloseShortcutRouter.shared.attach(appState: appState)
                     appState.refreshClipboardMarkdownCandidate()
                 }
         }
@@ -38,6 +39,15 @@ struct MarkPromptApp: App {
                     appState.openMarkdownFromPasteboard()
                 }
                 .disabled(appState.clipboardMarkdownCandidate == nil)
+
+                if appState.currentDocument != nil {
+                    Divider()
+
+                    Button("关闭文档") {
+                        appState.closeCurrentDocument()
+                    }
+                    .keyboardShortcut("w", modifiers: [.command])
+                }
 
                 if appState.recentDocumentURLs.isEmpty == false {
                     Divider()
@@ -141,6 +151,45 @@ struct MarkPromptApp: App {
     func toggleTaskMarkerStatus(_ sender: Any?)
     func selectNextTaskMarker(_ sender: Any?)
     func selectPreviousTaskMarker(_ sender: Any?)
+}
+
+@MainActor
+private final class MarkPromptCloseShortcutRouter {
+    static let shared = MarkPromptCloseShortcutRouter()
+
+    private weak var appState: AppState?
+    private var monitor: Any?
+
+    func attach(appState: AppState) {
+        self.appState = appState
+        guard monitor == nil else {
+            return
+        }
+
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let shouldConsume = MainActor.assumeIsolated {
+                self?.consumeIfNeeded(event) == true
+            }
+            return shouldConsume ? nil : event
+        }
+    }
+
+    private func consumeIfNeeded(_ event: NSEvent) -> Bool {
+        guard Self.isCommandW(event),
+              NSApp.modalWindow == nil,
+              appState?.currentDocument != nil
+        else {
+            return false
+        }
+
+        return appState?.closeCurrentDocument() == true
+    }
+
+    private static func isCommandW(_ event: NSEvent) -> Bool {
+        let relevantModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        return relevantModifiers == .command
+            && event.charactersIgnoringModifiers?.lowercased() == "w"
+    }
 }
 
 final class MarkPromptApplicationDelegate: NSObject, NSApplicationDelegate {
